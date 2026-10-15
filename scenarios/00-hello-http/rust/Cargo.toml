@@ -1,0 +1,14 @@
+[package]
+name = "hello-http"
+version = "1.0.0"
+edition = "2021"
+description = "multi-lang-backend-showcase: Rust axum hello http service"
+
+[dependencies]
+axum = "0.7"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+
+[profile.release]
+opt-level = 3
+lto = true

@@ -1,0 +1,130 @@
+# 场景 00：最小 HTTP 服务
+
+## 业务描述
+
+实现一个最简 HTTP 服务，统一 API 契约：
+
+```
+GET /hello?name={xxx}
+→ 200 OK
+→ Content-Type: application/json
+→ {"msg": "hello {xxx}"}
+
+# name 参数缺省时
+GET /hello
+→ {"msg": "hello world"}
+```
+
+所有语言实现**业务逻辑完全一致**，仅技术栈和风格不同。
+
+---
+
+## 实现清单
+
+| 语言 | 框架 / 运行时 | 端口 | 启动命令 |
+|------|-------------|------|---------|
+| Java | SpringBoot 2.1.3 + Jackson | 8080 | `mvn spring-boot:run` |
+| Go | 标准库 net/http | 8081 | `go run main.go` |
+| Python | FastAPI + Uvicorn | 8082 | `uvicorn main:app --port 8082` |
+| Rust | axum + tokio + serde | 8083 | `cargo run` |
+| TS(Node) | fastify + zod | 8084 | `npm run dev` |
+
+---
+
+## 关键对比
+
+| 维度 | Java | Go | Python | Rust | TS(Node) |
+|------|------|----|--------|------|----------|
+| **类型系统** | 强静态，Spring 启动时校验 | 强静态，编译期 | 动态类型（Pydantic 运行时校验） | 强静态，编译期 | 渐进式类型（zod 运行时校验） |
+| **依赖 & 构建** | Maven，pom.xml | go mod，go.mod | pip + requirements.txt | Cargo，Cargo.toml | npm/pnpm，package.json |
+| **并发模型** | JVM 线程池（Tomcat 默认 10-200） | Goroutine 无限扩缩 | asyncio 单线程协程 | tokio 多线程工作窃取 | 单线程事件循环 + libuv |
+| **错误处理** | 未捕获异常 → 500 | `if err != nil` 显式处理 | FastAPI 自动捕获 → 500 | 编译期必须处理 | fastify 自动捕获 → 500 |
+| **内存 / 启动** | JVM 预热慢（~3-10s），内存 ~200MB+ | 瞬间启动（<10ms），内存 ~5MB | 启动快（<500ms），内存 ~30MB | 瞬间启动（<10ms），内存 ~8MB | 启动中（~500ms），内存 ~60MB |
+| **优势** | 生态最全，企业级稳定 | 极简快速，静态编译单文件 | 开发最快，Pydantic 校验强 | 编译期安全，零 GC，极致性能 | 异步高效，TS 类型安全 |
+| **痛点 & 坑** | 启动慢，内存大，依赖重 | 错误处理样板多，没有泛型（1.18 之前） | GIL 限制 CPU 密集，依赖地狱 | 学习曲线陡峭，编译慢 | 单线程 CPU 密集弱，Node 运行时大 |
+
+---
+
+## 运行方式
+
+### Java
+```bash
+cd scenarios/00-hello-http/java
+mvn spring-boot:run
+curl http://localhost:8080/hello?name=Trae
+```
+
+### Go
+```bash
+cd scenarios/00-hello-http/go
+go mod tidy && go run main.go
+curl http://localhost:8081/hello?name=Trae
+```
+
+### Python
+```bash
+cd scenarios/00-hello-http/python
+pip install -r requirements.txt
+uvicorn main:app --port 8082
+curl http://localhost:8082/hello?name=Trae
+```
+
+### Rust
+```bash
+cd scenarios/00-hello-http/rust
+cargo run
+curl http://localhost:8083/hello?name=Trae
+```
+
+### TS-Node
+```bash
+cd scenarios/00-hello-http/ts-node
+npm install && npm run dev
+curl http://localhost:8084/hello?name=Trae
+```
+
+---
+
+## 选型思考
+
+| 场景 | 推荐语言 | 原因 |
+|------|---------|------|
+| **需要静态单文件部署**（K8s sidecar、CLI 工具） | **Go / Rust** | 无运行时依赖，直接二进制分发 |
+| **企业业务系统、已有 JVM 生态** | **Java** | 和现有系统无缝集成，成熟稳定 |
+| **快速原型、AI 应用** | **Python** | Pydantic + FastAPI 开发效率最高 |
+| **高性能中间件、安全敏感** | **Rust** | 编译期内存安全 + 极致性能 |
+| **BFF 层、前端后端一体化** | **TS(Node)** | TypeScript + fastify 异步高效 |
+
+### 冷启动对比（参考数据）
+
+| 语言 | 冷启动耗时 | 内存占用 |
+|------|-----------|---------|
+| Java | 3-10s | 200-500MB |
+| Go | <10ms | 5-10MB |
+| Python | <500ms | 20-40MB |
+| Rust | <10ms | 5-10MB |
+| TS-Node | <500ms | 50-80MB |
+
+> 数据为 Docker 容器内测量的典型值，具体因配置而异。
+
+### QPS 压测对比（wrk，待补充）
+
+| 语言 | QPS | p99 延迟 |
+|------|-----|---------|
+| Java (SpringBoot) | 待测 | 待测 |
+| Go | 待测 | 待测 |
+| Python (FastAPI) | 待测 | 待测 |
+| Rust (axum) | 待测 | 待测 |
+| TS-Node (fastify) | 待测 | 待测 |
+
+> 压测脚本见 [../../../bench/http-bench.sh](../../../bench/http-bench.sh)
+
+---
+
+## 延伸阅读
+
+- [Go 官方 HTTP 文档](https://pkg.go.dev/net/http)
+- [FastAPI 官方文档](https://fastapi.tiangolo.com/)
+- [axum 官方文档](https://docs.rs/axum/latest/axum/)
+- [fastify 官方文档](https://www.fastify.io/)
+- [SpringBoot Web 官方文档](https://docs.spring.io/spring-boot/docs/current/reference/htmlsingle/#web)

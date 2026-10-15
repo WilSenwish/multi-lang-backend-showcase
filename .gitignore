@@ -1,0 +1,45 @@
+# Java
+*.class
+*.jar
+*.war
+*.log
+target/
+build/
+.idea/
+*.iml
+.vscode/
+
+# Go
+go.sum
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.venv/
+venv/
+
+# Rust
+/target/
+Cargo.lock
+
+# Node.js
+node_modules/
+dist/
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+*.swp
+*.swo

@@ -1,0 +1,30 @@
+# docker-compose.yml
+# 一键拉起 00-hello-http 场景的 5 个语言服务（阶段2实现）
+# 使用方式：docker-compose up -d
+version: '3.8'
+
+services:
+  java:
+    build: ./scenarios/00-hello-http/java
+    ports:
+      - "8080:8080"
+
+  go:
+    build: ./scenarios/00-hello-http/go
+    ports:
+      - "8081:8081"
+
+  python:
+    build: ./scenarios/00-hello-http/python
+    ports:
+      - "8082:8082"
+
+  rust:
+    build: ./scenarios/00-hello-http/rust
+    ports:
+      - "8083:8083"
+
+  ts-node:
+    build: ./scenarios/00-hello-http/ts-node
+    ports:
+      - "8084:8084"
