@@ -15,7 +15,7 @@
 #                          而非 BigInt / 有符号输出）在"端口通"的判定下不可能被发现。
 #  - 每个 (场景,语言) 用 try/except 包裹，单个失败/超时不影响其余；超时返回 -999
 #  - 最后一定写出 JSON/MD 结果（含中断保护）
-import os, re, shutil, sys, subprocess, time, signal, json, socket, threading, http.client, urllib.request, urllib.error, traceback
+import os, re, shutil, sys, subprocess, time, signal, json, socket, threading, http.client, urllib.request, urllib.error, traceback, hashlib
 
 # 路径全部相对本文件推导，不写死绝对路径 —— 仓库目录改名/搬家后脚本仍然可用
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -85,6 +85,7 @@ SCENARIOS = [
     {"name":"13-cpu-bound-parallel","kind":"compute","ports":{"java":8135,"go":8136,"python":8137,"rust":8138,"ts-node":8139}},
     {"name":"14-data-analysis","kind":"data","ports":{"java":8140,"go":8141,"python":8142,"rust":8143,"ts-node":8144}},
     {"name":"15-structured-concurrency","kind":"cancel","ports":{"java":8145,"go":8146,"python":8147,"rust":8148,"ts-node":8149}},
+    {"name":"16-large-file-streaming","kind":"stream","ports":{"java":8150,"go":8151,"python":8152,"rust":8153,"ts-node":8154}},
 ]
 
 PREP_TIMEOUT = {"java":600, "go":1200, "python":600, "rust":1200, "ts-node":600}
@@ -692,6 +693,184 @@ def verify_cancel(lang, port, d, log, env):
         time.sleep(1)
 
 
+# ---- 场景 16：大文件流式处理 ----
+# 三个用例覆盖"流式"的三条语义：
+#   1) 8MB / 1KiB 块  —— 8192 个块，行几乎必然跨块边界；证明"残余行拼接"正确
+#   2) 8MB / 64KiB 块 —— 同一份数据换个块大小，摘要必须完全一致（与缓冲大小无关）
+#   3) 32MB / 64KiB   —— 数据量 4 倍，但 RSS 增量不得超过上限（是否真的没往内存里塞）
+# 为什么必须这么做：五门语言都能让服务起来、都能返回 200；
+# "是否流式"在响应码上完全看不出来，只有「摘要逐字节一致 + 内存增量有上限」能证明。
+STREAM_LINE_IN = 10    # "%03d,%05d\n"
+STREAM_LINE_OUT = 11   # "%03d,%06d\n"
+STREAM_CASES = [
+    {"name": "8MB/1KiB 块", "spec": {"size_mb": 8, "chunk_kib": 1, "min_amount": 50000}},
+    {"name": "8MB/64KiB 块", "spec": {"size_mb": 8, "chunk_kib": 64, "min_amount": 50000}},
+    {"name": "32MB/64KiB 块", "spec": {"size_mb": 32, "chunk_kib": 64, "min_amount": 50000},
+     "mem_cap_bytes": 16 * 1024 * 1024},
+]
+
+_stream_cache = {}
+_STREAM_PREFIX = [b"%03d," % g for g in range(1000)]       # 行首 "NNN," 只有 1000 种
+_STREAM_AMOUNT = [b"%05d" % a for a in range(100000)]      # amount 只有 100000 种
+_STREAM_NL = b"\n"
+
+
+def oracle_stream(sizes_mb, min_amount):
+    """场景 16 的 Python 独立 oracle：一次遍历算到 max(sizes_mb)，沿途记录各 size 的摘要。
+
+    为什么能"一次遍历算多个"：第 i 行只依赖 i，所以 8MB 的输入恰好是 32MB 输入的前缀，
+    在行边界处 flush 缓冲并 copy() 一份 hash 状态即可，不必重复生成 3 遍。
+    """
+    sizes_mb = sorted(set(sizes_mb))
+    max_mb = sizes_mb[-1]
+    key = (max_mb, min_amount)
+    if key in _stream_cache:
+        got = _stream_cache[key]
+        if all(s in got for s in sizes_mb):
+            return {s: got[s] for s in sizes_mb}
+
+    lines_total = (max_mb << 20) // STREAM_LINE_IN
+    # 边界：处理完第 N 行时的快照（升序）
+    bounds = {}
+    for s in sizes_mb:
+        bounds[(s << 20) // STREAM_LINE_IN] = s
+
+    h_in = hashlib.sha256()
+    h_out = hashlib.sha256()
+    in_buf, out_buf = [], []
+    out_bytes = 0
+    h = _DATA_INC  # 与场景 14 同款序列：h(i) = (i+1)*MULT + INC
+    results = {}
+
+    def flush():
+        if in_buf:
+            h_in.update(b"".join(in_buf))
+            in_buf.clear()
+        if out_buf:
+            blk = b"".join(out_buf)
+            h_out.update(blk)
+            out_buf.clear()
+            return len(blk)
+        return 0
+
+    carried = 0
+    for i in range(lines_total):
+        h = (h + _DATA_MULT) & _U64_MASK
+        a = (h >> 32) % 100000
+        p = _STREAM_PREFIX[i % 1000]
+        in_buf.append(p)
+        in_buf.append(_STREAM_AMOUNT[a])
+        in_buf.append(_STREAM_NL)
+        if a >= min_amount:
+            out_buf.append(p)
+            out_buf.append(b"%06d" % (a * 2))
+            out_buf.append(_STREAM_NL)
+        if len(in_buf) >= 3 * 65536 or len(out_buf) >= 3 * 65536:
+            carried += flush()
+        n = i + 1
+        if n in bounds:
+            carried += flush()
+            results[bounds[n]] = {
+                "lines_read": n,
+                "bytes_read": n * STREAM_LINE_IN,
+                "lines_written": carried // STREAM_LINE_OUT,  # 输出行定长 11 字节
+                "bytes_written": carried,
+                "checksum": h_in.copy().hexdigest()[:16],
+                "output_checksum": h_out.copy().hexdigest()[:16],
+            }
+    carried += flush()
+    results[bounds[lines_total]] = {
+        "lines_read": lines_total,
+        "bytes_read": lines_total * STREAM_LINE_IN,
+        "lines_written": carried // STREAM_LINE_OUT,
+        "bytes_written": carried,
+        "checksum": h_in.hexdigest()[:16],
+        "output_checksum": h_out.hexdigest()[:16],
+    }
+    _stream_cache[key] = results
+    return {s: results[s] for s in sizes_mb}
+
+
+def verify_stream(lang, port, d, log):
+    """场景 16 契约级断言：逐字节摘要 + 块数 + 内存增量上限。
+
+    本场景的"行为"就是"用固定内存把大文件处理完"。若某门语言退化成一次性读入，
+    服务照样返回 200、摘要照样正确 —— 只有 rss_delta_bytes 会随数据量线性增长。
+    """
+    free_port(port)
+    with open(log, "a") as lf:
+        proc = subprocess.Popen(start_cmd(lang, port, "stream", d), cwd=d, env=ENV,
+                                stdout=lf, stderr=subprocess.STDOUT, start_new_session=True)
+    try:
+        if not poll_listen(port, RUN_POLL):
+            return False, "no response on %d" % port + "\n" + tail(log)
+
+        sizes = [c["spec"]["size_mb"] for c in STREAM_CASES]
+        wants = oracle_stream(sizes, STREAM_CASES[0]["spec"]["min_amount"])
+
+        notes = []
+        for case in STREAM_CASES:
+            spec, want = case["spec"], wants[case["spec"]["size_mb"]]
+            try:
+                status, body = http_json_post(port, "/stream/process", spec, timeout=600)
+            except Exception as e:
+                return False, "[%s] 请求 /stream/process 失败: %r\n%s" % (case["name"], e, tail(log))
+            if status != 200:
+                return False, "[%s] HTTP %s（期望 200）: %s" % (case["name"], status, str(body)[:300])
+
+            for f in ("size_mb", "chunk_kib", "min_amount"):
+                if body.get(f) != spec[f]:
+                    return False, "[%s] %s 回显不符: %r（期望 %r）" % (case["name"], f, body.get(f), spec[f])
+            for f in ("bytes_read", "lines_read", "bytes_written", "lines_written",
+                      "checksum", "output_checksum"):
+                if body.get(f) != want[f]:
+                    return False, "[%s] %s=%r 与 oracle 不一致（期望 %r）" % (
+                        case["name"], f, body.get(f), want[f])
+
+            # 真实落盘字节数必须与声称的字节数一致：只比对计数器会漏掉
+            # "计数递增但内容被覆盖/没真正写出"这类静默错误（TS 侧就踩过一次）
+            if body.get("output_file_bytes") != want["bytes_written"]:
+                return False, ("[%s] output_file_bytes=%r 与声称的 bytes_written=%r 不符 "
+                               "—— 内容并未真正按预期写出"
+                               % (case["name"], body.get("output_file_bytes"), want["bytes_written"]))
+
+            chunk_bytes = spec["chunk_kib"] * 1024
+            want_chunks = -(-want["bytes_read"] // chunk_bytes)  # ceil
+            if body.get("chunks") != want_chunks:
+                return False, "[%s] chunks=%r（期望 %d = ceil(%d/%d)）" % (
+                    case["name"], body.get("chunks"), want_chunks, want["bytes_read"], chunk_bytes)
+
+            if body.get("cleanup") is not True:
+                return False, "[%s] cleanup=%r —— 临时文件没有被删除（多跑几次会撑满磁盘）" % (
+                    case["name"], body.get("cleanup"))
+
+            for f in ("gen_ms", "proc_ms", "elapsed_ms", "throughput_mb_s"):
+                v = body.get(f)
+                if not isinstance(v, (int, float)) or v < 0:
+                    return False, "[%s] %s 字段缺失或非法: %r" % (case["name"], f, v)
+
+            # ⭐ 本场景的核心断言：内存增量必须与数据量无关
+            cap = case.get("mem_cap_bytes")
+            delta = body.get("rss_delta_bytes")
+            if not isinstance(delta, (int, float)):
+                return False, "[%s] rss_delta_bytes 字段缺失或非法: %r" % (case["name"], delta)
+            if cap is not None and delta > cap:
+                return False, ("[%s] rss_delta_bytes=%.1fMiB 超过上限 %.1fMiB —— "
+                               "内存随数据量增长，实现并非流式（数据本身就有 %dMiB）"
+                               % (case["name"], delta / 1048576.0, cap / 1048576.0, spec["size_mb"]))
+
+            notes.append("%s %dms/%.1fMiB" % (case["name"], body.get("elapsed_ms"),
+                                              delta / 1048576.0))
+
+        return True, ("流式契约一致：%s（摘要与 oracle 逐字节相符，块数=ceil(bytes/chunk)，"
+                      "临时文件已清理；RSS 增量随数据量保持恒定）" % " ｜ ".join(notes))
+    finally:
+        kill_tree(proc)
+        subprocess.run(["pkill", "-9", "-f", os.path.join("scenarios", os.path.basename(os.path.dirname(d)))],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(1)
+
+
 def expected_cli_counts(path):
     """基准统计口径（与 Scala/Python/Rust/Java/Go 一致的"逻辑行数"）：
     行数 = 换行符个数，末行无换行时再 +1；词数 = 按空白切分。
@@ -833,6 +1012,8 @@ def main():
                         ok, note = verify_data(lang, sc["ports"][lang], d, log)
                     elif kind == "cancel":
                         ok, note = verify_cancel(lang, sc["ports"][lang], d, log, env_for(name, lang))
+                    elif kind == "stream":
+                        ok, note = verify_stream(lang, sc["ports"][lang], d, log)
                     else:
                         ok, note = False, "unknown kind"
                     st = "PASS" if ok else "FAIL"

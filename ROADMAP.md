@@ -13,7 +13,7 @@
 | **Phase 3** 拓展场景 | 3 | 文件 IO / 测试 Mock / RAG Demo（亮点） | ✅ 已完成 |
 | **Phase 4** 生产高频场景 | 3 | 结构化日志 / 配置管理 / HTTP 客户端 | ✅ 已完成 |
 | **Phase 5** 剩余场景 | 3 | 限流 / DB CRUD / 优雅关闭 | ✅ 已完成 |
-| **Phase 6** 边界场景 | 5 | 刻意选"某些语言天生不擅长"的问题，突出**技术选型** | 🚧 进行中（3/5） |
+| **Phase 6** 边界场景 | 5 | 刻意选"某些语言天生不擅长"的问题，突出**技术选型** | 🚧 进行中（4/5） |
 
 ---
 
@@ -101,8 +101,8 @@ Phase 6 专门补这一环。每个边界场景都必须写清楚**翻车方的�
 |---|------|---------|-----------|---------|------|
 | 13 | **cpu-bound-parallel** | Rust / Go / Java | Python、TS(Node) | Python 须换 `multiprocessing`（进程启动 + pickle 序列化）；Node 须 `worker_threads` + `BigInt`（慢约一个数量级） | ✅ **已完成** |
 | 14 | **data-analysis** | Python(pandas) / Rust(polars) | Java / Go / TS | 没有像样的 DataFrame，聚合与分位数要手写；TS 的 danfojs 已停更三年 | ✅ **已完成** |
-| 15 | **structured-concurrency** | Go / TS / Python | Java / Rust | Java 的 `StructuredTaskScope` 只保证作用域收尾、**不传播取消**（须手写标志 + 轮询）；Rust 无语言级结构化并发，取消要自己搭 | ✅ **已完成** |
-| 16 | **large-file-streaming** | Go / Rust | Java | 内存约束下易 OOM，须刻意流式 | ⬜ 待开始 |
+| 15 | **structured-concurrency** | Go / TS / Python | Java / Rust | Java 的 `StructuredTaskScope` 收尾靠 `Thread.interrupt()` 而非传播取消信号（拿不到取消原因、不可中断处失效，且仍是 preview API）；Rust 无语言级结构化并发，取消要自己搭 | ✅ **已完成** |
+| 16 | **large-file-streaming** | Go / Rust | Python / TS(Node) / Java | 标准库默认语义就是"一次读全"，须退回 `os.read` / `readSync` 自己管缓冲 + 手写行边界；Java 还拿不到 RSS（只能 fork `ps`）。一次性读入版实测 RSS 增量达数据的 12 倍 | ✅ **已完成** |
 | 17 | **error-handling** | Rust / Go | Python / TS | 无编译期错误类型约束，错误链靠约定 | ⬜ 待开始 |
 
 > 边界场景的**新验收要求**：必须做**契约级断言**（响应内容逐字段与独立 oracle 比对），
@@ -113,7 +113,7 @@ Phase 6 专门补这一环。每个边界场景都必须写清楚**翻车方的�
 | 13 | **cpu-bound-parallel** | CPU 密集并行计算 | GIL / 单线程事件循环 / 无 64 位整数 | 无 | ✅ **已完成** |
 | 14 | **data-analysis** | 数据分析处理（20 万行分组聚合，可调至 200 万） | DataFrame 生态差异 | pandas / polars / tablesaw / gonum / danfojs | ✅ **已完成** |
 | 15 | **structured-concurrency** | 结构化并发 + 取消传播 | context / AbortController / TaskGroup / cancel 语义 | Java 侧需 JDK 21（preview API） | ✅ **已完成** |
-| 16 | **large-file-streaming** | 大文件流式处理（1GB + 64MB 内存上限） | 迭代器统一程度、谁会全量读入 | 无 | ⬜ 待开始 |
+| 16 | **large-file-streaming** | 大文件流式处理（32MB 数据 / 16MiB RSS 增量上限） | 谁会全量读入、行边界怎么拼、RSS 怎么观测 | 无（Go/Rust/Java 全用标准库） | ✅ **已完成** |
 | 17 | **error-handling** | 错误处理深水区 | Result vs 异常 vs `if err != nil`、错误链 | 无 | ⬜ 待开始 |
 
 ---
@@ -161,6 +161,6 @@ Phase 6 专门补这一环。每个边界场景都必须写清楚**翻车方的�
 
 1. **给已有 `http` 类场景补契约级断言** —— 做法已在场景 13 上验证（§10）：用独立 oracle 逐字段比对。
    优先补 `02-concurrent-task`，它已确认存在 Java camelCase 与其余语言 snake_case 的**静默不一致**（VERIFICATION.md §11）。
-2. **继续 Phase 6 剩余 3 个边界场景**（15~17）。
+2. **继续 Phase 6 剩余 1 个边界场景**（`17-error-handling`）。
 3. 补充压测数据（`bench/http-bench.sh`）。
 4. 扩展 docs 专题深度（可参考本轮沉淀的 Python/uvicorn 优雅关闭踩坑，已写入 `docs/cloud-native-practice.md`）。
