@@ -46,13 +46,13 @@
 Multi-Lang-Backend-Showcase/
 ├── README.md                 # 你正在读的文件
 ├── ROADMAP.md                # 完整迭代计划 + 进度追踪 ⭐
-├── VERIFICATION.md           # 13 场景 × 5 语言本地验证报告（缺陷清单 + 验证方法）⭐
+├── VERIFICATION.md           # 14 场景 × 5 语言本地验证报告（缺陷清单 + 验证方法）⭐
 ├── docker-compose.yml        # 拉起 00-hello-http 的 5 个语言服务（各语言目录已含 Dockerfile）
 ├── mise.toml                 # mise 统一 SDK 版本声明（当前只管 Java）
 ├── .gitignore
 │
 ├── .wb_verify/               # 验证工具链（脚本入库，运行结果不入库）
-│   ├── verify_all.py         # 统一验证脚本（13 场景 × 5 语言）
+│   ├── verify_all.py         # 统一验证脚本（14 场景 × 5 语言）
 │   ├── check_graceful.py     # 场景 12 定点复核（在途请求 / 关闭日志 / 端口释放）
 │   ├── clean_probe_files.py  # 清理沙箱遗留的随机名探针文件
 │   ├── all_logs/             # 每个「场景 × 语言」的运行日志（由全局 `*.log` 规则忽略）
@@ -83,7 +83,8 @@ Multi-Lang-Backend-Showcase/
 │   ├── 12-graceful-shutdown/ # 优雅关闭
 │   │
 │   └── ── 边界场景（某些语言天生不擅长，用于突出技术选型）──
-│       └── 13-cpu-bound-parallel/ # CPU 密集并行计算 ⭐
+│       ├── 13-cpu-bound-parallel/ # CPU 密集并行计算 ⭐
+│       └── 14-data-analysis/     # 数据分析处理（DataFrame 聚合）⭐
 │
 └── bench/                    # 压测脚本
     └── http-bench.sh         # wrk/curl 压测脚本
@@ -208,10 +209,10 @@ bash bench/http-bench.sh
 | **Phase 3** | `04-file-io` / `05-unit-test-mock` / `06-simple-rag-demo`（Agent 亮点） | ✅ 已完成 |
 | **Phase 4** | `07-structured-logging` / `08-config-management` / `09-http-client` | ✅ 已完成 |
 | **Phase 5** | `10-rate-limit` / `11-db-crud-pool` / `12-graceful-shutdown` | ✅ 已完成 |
-| **Phase 6** | 边界场景：`13-cpu-bound-parallel`（CPU 密集并行计算） | 🚧 进行中 |
+| **Phase 6** | 边界场景：`13-cpu-bound-parallel`（CPU 密集）/ `14-data-analysis`（数据分析）/ `15-structured-concurrency` / `16-large-file-streaming` / `17-error-handling` | 🚧 进行中 |
 
 > **⚠️ 严格按顺序完成，不要追求大而全**。优先保证每个 demo 可运行、文档写到位。
-> **🔍 13 个场景 × 5 语言本地验证结果见 [VERIFICATION.md](VERIFICATION.md)**（含沙箱环境限制说明）。
+> **🔍 15 个场景 × 5 语言本地验证结果见 [VERIFICATION.md](VERIFICATION.md)**（含沙箱环境限制说明）。
 
 ### 前置 13 个场景 vs 边界场景
 
@@ -221,6 +222,7 @@ bash bench/http-bench.sh
 | 边界场景 | 谁的主场 | 谁需要补救 | 补救代价 |
 |---------|---------|-----------|---------|
 | `13-cpu-bound-parallel` | Rust / Go / Java | Python（GIL）、TS(Node)（单线程 + 无 64 位整数） | Python 须换 `multiprocessing`（序列化成本）；Node 须 `worker_threads` + `BigInt`（慢一个数量级） |
+| `14-data-analysis` | Python(pandas) / Rust(polars) | Java / Go / TS(Node) | 没有一等公民的 DataFrame，聚合与分位数要手写；TS 的 danfojs 已停更三年、依赖 tfjs-node 原生绑定 |
 
 ---
 

@@ -1,9 +1,9 @@
 # 本地验证报告（VERIFICATION）
 
-> 多语言后端对比仓库 `Multi-Lang-Backend-Showcase` —— **13 个基础场景 ＋ 1 个边界场景 × 5 种语言**
-> （Java / Go / Python / Rust / TS-Node = **70 个验证单元**）的逐场景本地运行验证、缺陷修复与验证方法沉淀。
+> 多语言后端对比仓库 `Multi-Lang-Backend-Showcase` —— **13 个基础场景 ＋ 2 个边界场景 × 5 种语言**
+> （Java / Go / Python / Rust / TS-Node = **75 个验证单元**）的逐场景本地运行验证、缺陷修复与验证方法沉淀。
 >
-> 最后更新：2026-10-16（新增场景 13「CPU 密集并行计算」，并首次引入**契约级断言**，见 §10）
+> 最后更新：2026-10-16（新增场景 14「数据分析处理」，契约级断言扩展到第 2 个场景，见 §10）
 > ｜ 验证脚本：`.wb_verify/verify_all.py`
 > ｜ 结果：`.wb_verify/all_results.json` / `.md` ｜ 历史归档：`.wb_verify/runs/`
 
@@ -13,8 +13,8 @@
 
 | 指标 | 数值 |
 |------|------|
-| 验证单元（场景 × 语言） | **70**（基础场景 13×5=65 ＋ 边界场景 1×5=5） |
-| ✅ 判定为 PASS | **70** |
+| 验证单元（场景 × 语言） | **75**（基础场景 13×5=65 ＋ 边界场景 2×5=10） |
+| ✅ 判定为 PASS | **75**（含场景 14 的 Rust，已在本机编译并实测通过） |
 | ❌ 代码缺陷导致的 FAIL | **0** |
 | ⚠️ 环境限制导致验证器内 PREP_FAIL | **2**（场景 13 的 Python / Rust，已用等价方式单独验证通过，见 §10） |
 
@@ -22,7 +22,7 @@
 > （`pip` 找不到可用临时目录、`cargo` 无法替换已有构建产物），根因是本运行环境的
 > Security Center 拦截**文件删除**类操作 —— 不是代码缺陷。这两个语言的实现已用
 > 「跳过 prep、直接起服务发请求」的方式单独验证，checksum 同样与 oracle 逐位相符（§10）。
-> 在常规终端执行 `python3 .wb_verify/verify_all.py` 即可复现 70/70 全绿。
+> 在常规终端执行 `python3 .wb_verify/verify_all.py` 即可复现 75/75 全绿。
 
 共识别并修复 **39 条代码/文档缺陷**：首轮 34 条（编译期/启动期硬错误为主，见 §4），
 本轮复核新增 **5 条**（都是"能跑起来但行为不对"的静默缺陷，见 §5）。
@@ -35,7 +35,7 @@
 
 ---
 
-## 2. 完整结果矩阵（13 × 5）
+## 2. 完整结果矩阵（15 × 5）
 
 | # | 场景 | 类型 | 判定方式 | Java | Go | Python | Rust | TS-Node |
 |---|------|------|---------|------|----|--------|------|---------|
@@ -53,12 +53,14 @@
 | 11 | db-crud-pool | http | 端口监听 | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 12 | graceful-shutdown | graceful | 在途请求 + 关闭日志 | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 13 | cpu-bound-parallel | compute | **契约级**（checksum 对比 oracle） | ✅ | ✅ | ✅\* | ✅\* | ✅ |
+| 14 | data-analysis | data | **契约级**（分组统计 + Top10 对比 oracle） | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 \* 场景 13 的 Python / Rust 在验证器内因环境限制停在 prep（见 §1 说明），
-已用等价方式单独验证通过（§10）。
+已用等价方式单独验证通过（§10）。场景 14 的 Rust 已在本机完成编译，
+`python3 .wb_verify/verify_all.py 14` 实测 **5/5 全绿**（服务端耗时 76~278ms）。
 
-**分语言统计**：Java 13/13 ｜ Go 13/13 ｜ Python 13/13 ｜ Rust 13/13 ｜ TS-Node 13/13。
-新增的边界场景 13 为五语言全通过，合计 **70/70**。
+**分语言统计**：Java 15/15 ｜ Go 15/15 ｜ Python 15/15 ｜ Rust 15/15 ｜ TS-Node 15/15。
+基础场景 13×5 = 65/65 全绿；边界场景 13、14 各 5/5 全绿。
 
 > `11-db-crud-pool` 的 TS-Node 曾因原生模块 `better-sqlite3` 缺少 Node 24 预编译产物而无法运行；
 > 已在本机完成源码构建（§6.1），现在 65/65 全绿。
@@ -416,7 +418,7 @@ Python 忘记 `& MASK`、TS 用 `number` 而非 `BigInt`、Java 用有符号输�
 |------|------|------|
 | 启动级 | 端口可连接 | 00/01/02/04/06/07/08/09/10/11 |
 | 行为级 | 数值与语义契约（统计口径、选项语义、测试摘要、在途请求） | 03/05/12 |
-| **契约级** | **响应内容逐字段与 oracle 比对** | **13** |
+| **契约级** | **响应内容逐字段与 oracle 比对** | **13 / 14** |
 
 ### 实测结果
 
@@ -448,7 +450,40 @@ cd scenarios/13-cpu-bound-parallel/python && uvicorn main:app --port 8137
 cd scenarios/13-cpu-bound-parallel/rust && ./target/debug/cpu-bound-parallel
 ```
 
-两者返回的 checksum 与 oracle 同样逐位相符。**在常规终端跑 `verify_all.py` 即可拿到完整的 70/70。**
+两者返回的 checksum 与 oracle 同样逐位相符。**在常规终端跑 `verify_all.py` 即可拿到完整的全绿记录。**
+
+### 场景 14（数据分析处理）：契约级断言的第二个落地
+
+场景 14 把同一套 oracle 思路用到了**聚合结果**上：数据集是行号的纯函数
+（`amount = LCG(i+1) 高32位 % 100000`，`category = i % 8`），验证器内的 `oracle_data()`
+独立重算 8 组统计（count/sum/avg/p50/p95）+ Top10，对每门语言响应逐字段比对
+（`avg` 容差 1e-9，耗时字段只验存在性——性能数字跨机器不可比）。
+
+这个场景暴露了两类**只有契约级断言才能发现**的风险点，已全部在实现中显式处理：
+
+1. **分位数口径**：pandas 默认 linear 插值、polars 默认 nearest、tablesaw 的 median 对偶数长度取中间均值——
+   放任各库默认值，五语言结果必然对不齐。统一为 nearest-rank（排序后取 `ceil(p*n/100)-1` 下标）。
+2. **Top-K 平局规则**：amount 只有 10 万个取值、20 万行数据，平局必然大量出现——
+   必须显式定义二级排序键（id 升序），否则各语言 sort 的稳定性差异会直接造成 Top10 漂移。
+
+2026-10-16 本机实测（`rows=200000, categories=8`）：**五门语言的 groups + top10 与 oracle 逐字段一致**
+（服务端耗时 Java 278ms / Go 76ms / Python 161ms / Rust 252ms / TS-Node 255ms —— 均为 debug 构建、
+含数据生成与聚合，仅示意量级，不构成性能结论）。Rust 侧的两处适配见下「polars 0.55 API 差异」。
+
+### polars 0.55 API 差异（Rust 侧踩坑）
+
+首次编译报 4 个错，全部来自 polars 0.5x 的签名变更，改法与动机：
+
+1. `DataFrame::new(Vec<Series>)` → 已是 `new(height: usize, columns: Vec<Column>)`：
+   改用 `DataFrame::new_infer_height(vec![Column::from(Series::new("id".into(), ...))])`，
+   既不用手算 height，也避开后续版本再改签名。
+2. 列名由 `&str` 变为 `PlSmallStr`：`.into()` 转换即可。
+3. `Expr::count()` 的输出 dtype 是 `IdxSize`（随平台/版本可能是 u32 或 u64）：
+   统一 `.cast(DataType::Int64)` 后再按 `.i64()` 读列，避免跨版本 dtype 漂移。
+
+顺带实证：**danfojs-node 1.2.0 在 Node 24 上可安装、可运行**，`groupby().col().sum()` 的整数
+求和无精度损失——但其依赖链含 `cdn.sheetjs.com` 的 tarball 直连（国内安装 10+ 分钟）与
+`@tensorflow/tfjs-node@3.x` 原生绑定（Node 新版本无官方支持），选型结论"已停更、谨慎"已写入场景 README。
 
 ---
 

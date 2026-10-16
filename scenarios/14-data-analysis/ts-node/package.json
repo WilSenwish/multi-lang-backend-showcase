@@ -1,0 +1,19 @@
+{
+  "name": "data-analysis",
+  "version": "1.0.0",
+  "description": "Multi-Lang-Backend-Showcase: TypeScript Node 数据分析处理 (danfojs-node)",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "danfojs-node": "^1.2.0",
+    "fastify": "^4.28.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "tsx": "^4.15.0",
+    "typescript": "^5.4.5"
+  }
+}

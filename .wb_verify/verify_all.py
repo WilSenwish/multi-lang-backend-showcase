@@ -67,6 +67,7 @@ SCENARIOS = [
     {"name":"12-graceful-shutdown","kind":"graceful","ports":{"java":8130,"go":8131,"python":8132,"rust":8133,"ts-node":8134}},
     # 13+ 为"边界场景"：CPU 密集 / 数据分析 / 结构化并发 / 大文件流式 / 错误处理
     {"name":"13-cpu-bound-parallel","kind":"compute","ports":{"java":8135,"go":8136,"python":8137,"rust":8138,"ts-node":8139}},
+    {"name":"14-data-analysis","kind":"data","ports":{"java":8140,"go":8141,"python":8142,"rust":8143,"ts-node":8144}},
 ]
 
 PREP_TIMEOUT = {"java":600, "go":1200, "python":600, "rust":1200, "ts-node":600}
@@ -160,7 +161,7 @@ def start_cmd(lang, port, kind, d):
         if lang == "rust": return ["cargo", "test"]
         if lang == "ts-node": return ["npx", "vitest", "run"]
         if lang == "python": return ["pytest", "-q"]
-    # http / graceful / compute 共用同一套启动命令（compute 只换了判定方式）
+    # http / graceful / compute / data 共用同一套启动命令（compute/data 只换了判定方式）
     if lang == "java": return ["mvn", "-q", "-DskipTests", "spring-boot:run"]
     if lang == "go": return ["go", "run", "."]
     if lang == "python": return ["bash", "-c", "uvicorn main:app --port %d" % port]
@@ -419,6 +420,139 @@ def verify_compute(lang, port, d, log):
         time.sleep(1)
 
 
+# ---- 场景 14：数据分析处理 ----
+DATA_SPEC = {"rows": 200000, "categories": 8}
+
+_DATA_MULT = 6364136223846793005
+_DATA_INC = 1442695040888963407
+
+# oracle 全量重算一次约 1~2 秒（20 万行大整数运算 + 排序），缓存避免五门语言重复算
+_data_oracle_cache = None
+
+
+def _data_amount_of(i):
+    h = ((i + 1) * _DATA_MULT + _DATA_INC) & _U64_MASK
+    return (h >> 32) % 100000
+
+
+def oracle_data(spec):
+    """场景 14 的 Python 独立 oracle：完整重算期望的分组统计与 Top10。
+
+    分位数口径：nearest-rank（排序后取 ceil(p*n/100)-1 下标，整数运算无浮点歧义）。
+    """
+    global _data_oracle_cache
+    if _data_oracle_cache is not None:
+        return _data_oracle_cache
+
+    rows, cats = spec["rows"], spec["categories"]
+    amounts = [_data_amount_of(i) for i in range(rows)]
+    buckets = [[] for _ in range(cats)]
+    sums = [0] * cats
+    for i in range(rows):
+        c = i % cats
+        buckets[c].append(amounts[i])
+        sums[c] += amounts[i]
+
+    groups = []
+    for c in range(cats):
+        vals = sorted(buckets[c])
+        n = len(vals)
+        if n == 0:
+            continue
+        # ceil(p*n/100) 的整数实现：先 +99 再整除
+        i50 = max(0, min(n - 1, (50 * n + 99) // 100 - 1))
+        i95 = max(0, min(n - 1, (95 * n + 99) // 100 - 1))
+        groups.append({
+            "category": "cat-%d" % c, "count": n, "sum": sums[c],
+            "avg": sums[c] / n, "p50": vals[i50], "p95": vals[i95],
+        })
+
+    order = sorted(range(rows), key=lambda i: (-amounts[i], i))
+    top10 = [{"id": i, "category": "cat-%d" % (i % cats), "amount": amounts[i]}
+             for i in order[:10]]
+
+    _data_oracle_cache = (groups, top10)
+    return _data_oracle_cache
+
+
+def _close(a, b, tol=1e-9):
+    return isinstance(a, (int, float)) and isinstance(b, (int, float)) \
+        and abs(a - b) <= tol * max(1.0, abs(a), abs(b))
+
+
+def verify_data(lang, port, d, log):
+    """场景 14 契约级断言：分组统计 / Top10 与 Python oracle 逐字段比对。
+
+    本场景的"行为"就是聚合结果。若某门语言的整数语义写错（uint64 环绕、
+    分位数口径、Top-K 平局规则），服务照样能起 —— 只有比对聚合结果才能发现。
+    """
+    free_port(port)
+    with open(log, "a") as lf:
+        proc = subprocess.Popen(start_cmd(lang, port, "data", d), cwd=d, env=ENV,
+                                stdout=lf, stderr=subprocess.STDOUT, start_new_session=True)
+    try:
+        if not poll_listen(port, RUN_POLL):
+            return False, "no response on %d" % port + "\n" + tail(log)
+
+        want_groups, want_top = oracle_data(DATA_SPEC)
+
+        t0 = time.time()
+        try:
+            status, body = http_json_post(port, "/analyze", DATA_SPEC, timeout=600)
+        except Exception as e:
+            return False, "请求 /analyze 失败: %r\n%s" % (e, tail(log))
+        elapsed = time.time() - t0
+
+        if status != 200:
+            return False, "HTTP %s（期望 200）: %s" % (status, str(body)[:300])
+
+        if body.get("rows") != DATA_SPEC["rows"] or body.get("categories") != DATA_SPEC["categories"]:
+            return False, "rows/categories 回显不符: %r/%r" % (body.get("rows"), body.get("categories"))
+
+        # 分组统计
+        groups = body.get("groups")
+        if not isinstance(groups, list) or len(groups) != len(want_groups):
+            return False, "groups 数量不符: %s（期望 %d）" % (
+                len(groups) if isinstance(groups, list) else repr(groups)[:120],
+                len(want_groups))
+        for i, (g, w) in enumerate(zip(groups, want_groups)):
+            if g.get("category") != w["category"]:
+                return False, "groups[%d].category=%r（期望 %r，须按名称升序）" % (
+                    i, g.get("category"), w["category"])
+            for k in ("count", "sum", "p50", "p95"):
+                if g.get(k) != w[k]:
+                    return False, "groups[%d].%s=%r 与 oracle 不一致（期望 %r）" % (
+                        i, k, g.get(k), w[k])
+            if not _close(g.get("avg"), w["avg"]):
+                return False, "groups[%d].avg=%r 与 oracle 不一致（期望 %r）" % (
+                    i, g.get("avg"), w["avg"])
+
+        # Top-10
+        top10 = body.get("top10")
+        if not isinstance(top10, list) or len(top10) != len(want_top):
+            return False, "top10 数量不符: %s" % (
+                len(top10) if isinstance(top10, list) else repr(top10)[:120])
+        for i, (t, w) in enumerate(zip(top10, want_top)):
+            for k in ("id", "category", "amount"):
+                if t.get(k) != w[k]:
+                    return False, "top10[%d].%s=%r 与 oracle 不一致（期望 %r）" % (
+                        i, k, t.get(k), w[k])
+
+        # 耗时字段仅要求存在且非负（跨机器不可比，不做强断言）
+        for k in ("gen_ms", "agg_ms", "elapsed_ms"):
+            if not isinstance(body.get(k), (int, float)) or body[k] < 0:
+                return False, "%s 字段缺失或非法: %r" % (k, body.get(k))
+
+        return True, ("契约一致：%d 组统计 + Top10 与 oracle 逐字段相符；"
+                      "服务端耗时 %sms（含生成+聚合），验证请求 %.1fs"
+                      % (len(groups), body.get("elapsed_ms"), elapsed))
+    finally:
+        kill_tree(proc)
+        subprocess.run(["pkill", "-9", "-f", os.path.join("scenarios", os.path.basename(os.path.dirname(d)))],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(1)
+
+
 def expected_cli_counts(path):
     """基准统计口径（与 Scala/Python/Rust/Java/Go 一致的"逻辑行数"）：
     行数 = 换行符个数，末行无换行时再 +1；词数 = 按空白切分。
@@ -556,6 +690,8 @@ def main():
                         ok, note = verify_graceful(lang, sc["ports"][lang], d, log)
                     elif kind == "compute":
                         ok, note = verify_compute(lang, sc["ports"][lang], d, log)
+                    elif kind == "data":
+                        ok, note = verify_data(lang, sc["ports"][lang], d, log)
                     else:
                         ok, note = False, "unknown kind"
                     st = "PASS" if ok else "FAIL"
