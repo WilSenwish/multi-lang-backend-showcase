@@ -86,7 +86,8 @@ Multi-Lang-Backend-Showcase/
 │       ├── 13-cpu-bound-parallel/ # CPU 密集并行计算 ⭐
 │       ├── 14-data-analysis/     # 数据分析处理（DataFrame 聚合）⭐
 │       ├── 15-structured-concurrency/ # 结构化并发 + 取消传播 ⭐
-│       └── 16-large-file-streaming/   # 大文件流式处理（内存上限契约）⭐
+│       ├── 16-large-file-streaming/   # 大文件流式处理（内存上限契约）⭐
+│       └── 17-error-handling/         # 错误处理深水区（可观测性契约）⭐
 │
 └── bench/                    # 压测脚本
     └── http-bench.sh         # wrk/curl 压测脚本
@@ -211,10 +212,10 @@ bash bench/http-bench.sh
 | **Phase 3** | `04-file-io` / `05-unit-test-mock` / `06-simple-rag-demo`（Agent 亮点） | ✅ 已完成 |
 | **Phase 4** | `07-structured-logging` / `08-config-management` / `09-http-client` | ✅ 已完成 |
 | **Phase 5** | `10-rate-limit` / `11-db-crud-pool` / `12-graceful-shutdown` | ✅ 已完成 |
-| **Phase 6** | 边界场景：`13-cpu-bound-parallel`（CPU 密集）/ `14-data-analysis`（数据分析）/ `15-structured-concurrency`（取消传播）/ `16-large-file-streaming`（流式）/ `17-error-handling` | 🚧 进行中（4/5） |
+| **Phase 6** | 边界场景：`13-cpu-bound-parallel`（CPU 密集）/ `14-data-analysis`（数据分析）/ `15-structured-concurrency`（取消传播）/ `16-large-file-streaming`（流式）/ `17-error-handling`（错误处理） | ✅ 已完成（5/5） |
 
 > **⚠️ 严格按顺序完成，不要追求大而全**。优先保证每个 demo 可运行、文档写到位。
-> **🔍 17 个场景 × 5 语言本地验证结果见 [VERIFICATION.md](VERIFICATION.md)**（含沙箱环境限制说明）。
+> **🔍 18 个场景 × 5 语言本地验证结果见 [VERIFICATION.md](VERIFICATION.md)**（含沙箱环境限制说明）。
 
 ### 前置 13 个场景 vs 边界场景
 
@@ -227,6 +228,7 @@ bash bench/http-bench.sh
 | `14-data-analysis` | Python(pandas) / Rust(polars) | Java / Go / TS(Node) | 没有一等公民的 DataFrame，聚合与分位数要手写；TS 的 danfojs 已停更三年、依赖 tfjs-node 原生绑定 |
 | `15-structured-concurrency` | Go(context) / Python(TaskGroup) | Java / Rust | Java 的 `StructuredTaskScope` 仍是 JDK 21 preview，且**用线程中断代替取消传播**（拿不到取消原因、不可中断处失效）；Rust 无语言级原语，取消要自建广播 + 每个 await 点 select |
 | `16-large-file-streaming` | Go / Rust（读进调用方缓冲，天然固定内存） | Python / TS(Node) / Java | 标准库默认语义就是"一次读全"，须退回 `os.read` / `readSync` 自己管缓冲 + 手写行边界；Java 还**拿不到 RSS**（只能 fork `ps`）。一次性读入版实测 RSS 增量是数据的 12 倍 |
+| `17-error-handling` | Rust(`Result`) / Java(`@RestControllerAdvice`) | Go / Python / TS(Node) | Go 的 `%w` 漏一个就断链且编译器不提醒、goroutine 错误无钩子；Python 漏 `from` 只剩 `__context__`；TS 的 `cause` 需 ES2022，**Node 默认还会因未捕获 rejection 直接终止进程** |
 
 ---
 

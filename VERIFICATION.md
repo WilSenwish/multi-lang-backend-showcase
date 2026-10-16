@@ -1,9 +1,10 @@
 # 本地验证报告（VERIFICATION）
 
-> 多语言后端对比仓库 `Multi-Lang-Backend-Showcase` —— **13 个基础场景 ＋ 4 个边界场景 × 5 种语言**
-> （Java / Go / Python / Rust / TS-Node = **85 个验证单元**）的逐场景本地运行验证、缺陷修复与验证方法沉淀。
+> 多语言后端对比仓库 `Multi-Lang-Backend-Showcase` —— **13 个基础场景 ＋ 5 个边界场景 × 5 种语言**
+> （Java / Go / Python / Rust / TS-Node = **90 个验证单元**）的逐场景本地运行验证、缺陷修复与验证方法沉淀。
 >
-> 最后更新：2026-10-16（新增场景 16「大文件流式处理」，**内存占用首次成为可断言字段**，见 §10）
+> 最后更新：2026-10-16（新增场景 17「错误处理深水区」，**可观测性首次成为可断言字段**，见 §10；
+> Phase 6 五个边界场景全部交付）
 > ｜ 验证脚本：`.wb_verify/verify_all.py`
 > ｜ 结果：`.wb_verify/all_results.json` / `.md` ｜ 历史归档：`.wb_verify/runs/`
 
@@ -13,8 +14,8 @@
 
 | 指标 | 数值 |
 |------|------|
-| 验证单元（场景 × 语言） | **85**（基础场景 13×5=65 ＋ 边界场景 4×5=20） |
-| ✅ 判定为 PASS | **85**（含场景 14 的 Rust 与场景 15 的 Java/JDK 21，均已在本机编译并实测通过） |
+| 验证单元（场景 × 语言） | **90**（基础场景 13×5=65 ＋ 边界场景 5×5=25） |
+| ✅ 判定为 PASS | **90**（含场景 14 的 Rust 与场景 15 的 Java/JDK 21，均已在本机编译并实测通过） |
 | ❌ 代码缺陷导致的 FAIL | **0** |
 | ⚠️ 环境限制导致验证器内 PREP_FAIL | **2**（场景 13 的 Python / Rust，已用等价方式单独验证通过，见 §10） |
 
@@ -22,7 +23,7 @@
 > （`pip` 找不到可用临时目录、`cargo` 无法替换已有构建产物），根因是本运行环境的
 > Security Center 拦截**文件删除**类操作 —— 不是代码缺陷。这两个语言的实现已用
 > 「跳过 prep、直接起服务发请求」的方式单独验证，checksum 同样与 oracle 逐位相符（§10）。
-> 在常规终端执行 `python3 .wb_verify/verify_all.py` 即可复现 85/85 全绿。
+> 在常规终端执行 `python3 .wb_verify/verify_all.py` 即可复现 90/90 全绿。
 
 共识别并修复 **39 条代码/文档缺陷**：首轮 34 条（编译期/启动期硬错误为主，见 §4），
 本轮复核新增 **5 条**（都是"能跑起来但行为不对"的静默缺陷，见 §5）。
@@ -35,7 +36,7 @@
 
 ---
 
-## 2. 完整结果矩阵（17 × 5）
+## 2. 完整结果矩阵（18 × 5）
 
 | # | 场景 | 类型 | 判定方式 | Java | Go | Python | Rust | TS-Node |
 |---|------|------|---------|------|----|--------|------|---------|
@@ -56,6 +57,7 @@
 | 14 | data-analysis | data | **契约级**（分组统计 + Top10 对比 oracle） | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 15 | structured-concurrency | cancel | **契约级**（取消传播三用例 + 延迟查活跃任务） | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 16 | large-file-streaming | stream | **契约级**（逐字节摘要 + 块数 + **RSS 增量上限**） | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 17 | error-handling | error | **契约级**（五形态逐字段 + **异步错误可观测性**） | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 \* 场景 13 的 Python / Rust 在验证器内因环境限制停在 prep（见 §1 说明），
 已用等价方式单独验证通过（§10）。场景 14 的 Rust 已在本机完成编译，
@@ -63,9 +65,11 @@
 场景 15 是唯一需要按场景切换 JDK 的（Java 用 JDK 21，见 §10）。
 场景 16 的三个用例（8MB/1KiB 、8MB/64KiB、32MB/64KiB）五门语言摘要与 oracle 逐字节相符，
 32MB 用例的 RSS 增量 0.0~1.2MiB（上限 16MiB）。
+场景 17 把 `stack_present` 做成**逐语言预期**（Java/Python/TS 为 true，Go/Rust 为 false）：
+这不是缺陷而是语言默认行为，刻意不为了对齐去给 Go 抓栈、给 Rust 开 `RUST_BACKTRACE`。
 
-**分语言统计**：Java 17/17 ｜ Go 17/17 ｜ Python 17/17 ｜ Rust 17/17 ｜ TS-Node 17/17。
-基础场景 13×5 = 65/65 全绿；边界场景 13、14、15、16 各 5/5 全绿。
+**分语言统计**：Java 18/18 ｜ Go 18/18 ｜ Python 18/18 ｜ Rust 18/18 ｜ TS-Node 18/18。
+基础场景 13×5 = 65/65 全绿；边界场景 13、14、15、16、17 各 5/5 全绿。
 
 > `11-db-crud-pool` 的 TS-Node 曾因原生模块 `better-sqlite3` 缺少 Node 24 预编译产物而无法运行；
 > 已在本机完成源码构建（§6.1），现在 65/65 全绿。
@@ -590,6 +594,58 @@ tasks=8, task_ms=2000, fail_index=3, fail_after_ms=250
 5. **Rust 的 debug / release 差 ~17 倍**：验证器统一用 `cargo run`（debug），
    同一份代码 release 下是 63/50/198ms、debug 下是 891/836/3350ms。
    对比跨语言耗时前必须先确认构建档位，否则会得出完全错误的选型结论。
+
+### 场景 17（错误处理深水区）：把"可观测性"变成可断言的字段
+
+前四个边界场景断言的都是"算出来的值对不对"（13/14）、"取消有没有生效"（15）、
+"内存有没有爆"（16）。场景 17 断言的是**出事的时候你能不能知道出了什么事**。
+
+统一契约：`GET /errors/{kind}` 五种错误形态（`not_found` / `validation` / `wrap_chain` /
+`panic` / `async_detached`）+ `GET /stats`。响应体把四件事变成可断言字段：
+
+| 字段 | 断言点 |
+|------|--------|
+| `cause_chain` | 四层因果链（最外层 → 根因）**逐字一致** —— 足以测出"包装时漏了 `%w` / `from` / `cause`" |
+| `trace_id` | 必须与请求头 `X-Trace-Id` **逐字相同** —— 错误路径上有没有把上下文带出来 |
+| `recovered` + 服务仍可应答 | 证明未捕获异常是真兜住了，不是进程崩了又起来 |
+| `/stats.unhandled ≥ 1` | **脱离请求上下文的错误有没有人看见** —— 本场景的胜负手 |
+
+**实测 5/5 PASS**。核心差异（详见场景 README）：
+
+- **脱离上下文的异步错误，五门语言五种命运**：Go 彻底静默（goroutine 里的 panic 还会
+  终止进程）；Rust 的 `JoinHandle` 被 drop 时错误消失；Java 的 `CompletableFuture`
+  异常静静躺在 Future 里；Python 只在 task 被 GC 时打一行日志；
+  **TS(Node) 默认 `--unhandled-rejections=throw`，不装钩子就直接终止进程**。
+- **`stack_present` 逐语言预期**（`java/python/ts-node = true`，`go/rust = false`）不是缺陷，
+  是语言默认行为：Go 的 error 是值、`recover()` 只拿到 `any`；Rust 的 anyhow 只在
+  `RUST_BACKTRACE=1` 时才抓 backtrace。刻意不为了对齐去补，让差异暴露成可断言的事实。
+
+#### 两个反向对照实验（证明断言"有牙齿"）
+
+1. **Python 去掉 `task.add_done_callback(...)`**：HTTP 照样 202、响应体完全正常，
+   只有 `/stats.unhandled` 恒为 0 —— 只比对响应体根本区分不出来。
+2. **Node 去掉 `process.on("unhandledRejection")`**：
+   ```console
+   $ node -e "Promise.reject(new Error('async-boom-17')); setTimeout(()=>console.log('存活'),500)"
+   Error: async-boom-17        ← 进程直接退出，"存活" 那行永远没打印
+   Node.js v22.22.2
+   ```
+   装上钩子后正常输出 `钩子捕获到: async-boom-17` → `装了钩子 -> 进程存活`。
+
+#### 场景 17 踩到的实现坑
+
+1. **Java 的 `CompletionException` 会包一层**：`whenComplete` 里拿到的 `e` 不是原始异常，
+   取 `getMessage()` 会得到 `"java.lang.RuntimeException: async-boom-17"`，必须剥到根因。
+2. **Python 的 `@app.middleware("http")` 必须自己接异常**：Starlette 默认的
+   `ServerErrorMiddleware` 会在发完响应后把异常继续抛给 uvicorn —— 响应体是我们给的，
+   但异常对上层仍是"未处理"的，进不了错误体系。
+3. **TS 的 `Error.cause` 需要 ES2022**：tsconfig 的 `target`/`lib` 低于 ES2022 时
+   `new Error(msg, { cause })` 编译能过但 cause 静默丢失；且 `console.log(err)` 默认不打印 cause。
+4. **Rust 的 panic payload 类型不定**：`panic!("literal")` 可能是 `&str` 也可能是 `String`，
+   downcast 必须两种都处理。
+5. **Go 的 `mux.Handle("GET /errors/", ...)` 是子树匹配**：没有"通配一段"的语法，
+   `{kind}` 要自己 `strings.TrimPrefix`。另外**不写 `recover` 中间件时 `net/http` 也会 recover**，
+   但它做的是断开连接 —— 客户端拿到 EOF 而不是 500，日志里也什么都没有。
 
 ---
 

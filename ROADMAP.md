@@ -13,7 +13,7 @@
 | **Phase 3** 拓展场景 | 3 | 文件 IO / 测试 Mock / RAG Demo（亮点） | ✅ 已完成 |
 | **Phase 4** 生产高频场景 | 3 | 结构化日志 / 配置管理 / HTTP 客户端 | ✅ 已完成 |
 | **Phase 5** 剩余场景 | 3 | 限流 / DB CRUD / 优雅关闭 | ✅ 已完成 |
-| **Phase 6** 边界场景 | 5 | 刻意选"某些语言天生不擅长"的问题，突出**技术选型** | 🚧 进行中（4/5） |
+| **Phase 6** 边界场景 | 5 | 刻意选"某些语言天生不擅长"的问题，突出**技术选型** | ✅ **已完成**（5/5） |
 
 ---
 
@@ -89,7 +89,7 @@
 
 ---
 
-## Phase 6 — 🚧 边界场景（进行中）
+## Phase 6 — ✅ 边界场景（已完成 5/5）
 
 前 13 个场景的设计前提是「**五门语言都能做**，差异在范式与心智负担」——这保证了对比公平，
 但回答不了技术选型里最关键的一问：**什么时候某门语言根本不该上场，补救方案又要付出多少代价。**
@@ -103,7 +103,7 @@ Phase 6 专门补这一环。每个边界场景都必须写清楚**翻车方的�
 | 14 | **data-analysis** | Python(pandas) / Rust(polars) | Java / Go / TS | 没有像样的 DataFrame，聚合与分位数要手写；TS 的 danfojs 已停更三年 | ✅ **已完成** |
 | 15 | **structured-concurrency** | Go / TS / Python | Java / Rust | Java 的 `StructuredTaskScope` 收尾靠 `Thread.interrupt()` 而非传播取消信号（拿不到取消原因、不可中断处失效，且仍是 preview API）；Rust 无语言级结构化并发，取消要自己搭 | ✅ **已完成** |
 | 16 | **large-file-streaming** | Go / Rust | Python / TS(Node) / Java | 标准库默认语义就是"一次读全"，须退回 `os.read` / `readSync` 自己管缓冲 + 手写行边界；Java 还拿不到 RSS（只能 fork `ps`）。一次性读入版实测 RSS 增量达数据的 12 倍 | ✅ **已完成** |
-| 17 | **error-handling** | Rust / Go | Python / TS | 无编译期错误类型约束，错误链靠约定 | ⬜ 待开始 |
+| 17 | **error-handling** | Rust(`Result`) / Java(Advice) | Go / Python / TS(Node) | Go 的 `%w` 漏一个就断链且编译器不提醒、goroutine 错误**完全没有钩子**（panic 还会打挂进程）；Python 漏 `from` 只剩 `__context__`、asyncio task 错误无钩子；TS 的 `cause` 需 ES2022 且 Node 默认会因未捕获 rejection **直接终止进程**。Rust 的 `JoinHandle` 被 drop 时错误静默消失 | ✅ **已完成** |
 
 > 边界场景的**新验收要求**：必须做**契约级断言**（响应内容逐字段与独立 oracle 比对），
 > 不能停留在"端口监听级"。判定强度分层见 [VERIFICATION.md](VERIFICATION.md) §10。
@@ -114,7 +114,7 @@ Phase 6 专门补这一环。每个边界场景都必须写清楚**翻车方的�
 | 14 | **data-analysis** | 数据分析处理（20 万行分组聚合，可调至 200 万） | DataFrame 生态差异 | pandas / polars / tablesaw / gonum / danfojs | ✅ **已完成** |
 | 15 | **structured-concurrency** | 结构化并发 + 取消传播 | context / AbortController / TaskGroup / cancel 语义 | Java 侧需 JDK 21（preview API） | ✅ **已完成** |
 | 16 | **large-file-streaming** | 大文件流式处理（32MB 数据 / 16MiB RSS 增量上限） | 谁会全量读入、行边界怎么拼、RSS 怎么观测 | 无（Go/Rust/Java 全用标准库） | ✅ **已完成** |
-| 17 | **error-handling** | 错误处理深水区 | Result vs 异常 vs `if err != nil`、错误链 | 无 | ⬜ 待开始 |
+| 17 | **error-handling** | 错误处理深水区（五形态 + 异步错误可观测性） | `Result` vs 异常 vs `if err != nil`、错误链、trace 透传 | 无（Rust 用 anyhow） | ✅ **已完成** |
 
 ---
 
@@ -146,7 +146,7 @@ Phase 6 专门补这一环。每个边界场景都必须写清楚**翻车方的�
 
 ## 下一步
 
-> **所有 5 个阶段、13 个场景、5 种语言的实现均已完成，并通过三轮本机验证（当前 65/65 全绿）。**
+> **所有 5 个阶段、18 个场景（13 基础 + 5 边界）、5 种语言的实现均已完成，并通过本机验证（当前 90/90 全绿）。**
 > 验证方法、缺陷清单与踩坑记录详见 [VERIFICATION.md](VERIFICATION.md)。
 
 已完成的验证轮次：
@@ -161,6 +161,8 @@ Phase 6 专门补这一环。每个边界场景都必须写清楚**翻车方的�
 
 1. **给已有 `http` 类场景补契约级断言** —— 做法已在场景 13 上验证（§10）：用独立 oracle 逐字段比对。
    优先补 `02-concurrent-task`，它已确认存在 Java camelCase 与其余语言 snake_case 的**静默不一致**（VERIFICATION.md §11）。
-2. **继续 Phase 6 剩余 1 个边界场景**（`17-error-handling`）。
+2. ~~**继续 Phase 6 剩余 1 个边界场景**（`17-error-handling`）。~~ ✅ 已完成（Phase 6 五个边界场景全部交付）
+   - 后续可选方向：`http` 类场景从"端口监听级"升级到契约级响应比对；为 `02-concurrent-task` 修掉
+     Java 响应 camelCase 与其余四门 snake_case 的不一致（见 VERIFICATION §已知契约不一致）。
 3. 补充压测数据（`bench/http-bench.sh`）。
 4. 扩展 docs 专题深度（可参考本轮沉淀的 Python/uvicorn 优雅关闭踩坑，已写入 `docs/cloud-native-practice.md`）。

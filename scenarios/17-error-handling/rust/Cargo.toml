@@ -1,0 +1,12 @@
+[package]
+name = "error-handling"
+version = "1.0.0"
+edition = "2021"
+description = "Multi-Lang-Backend-Showcase: Rust 错误处理深水区（anyhow 上下文链 + catch_unwind + tokio 看护任务）"
+
+[dependencies]
+axum = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"

@@ -86,6 +86,7 @@ SCENARIOS = [
     {"name":"14-data-analysis","kind":"data","ports":{"java":8140,"go":8141,"python":8142,"rust":8143,"ts-node":8144}},
     {"name":"15-structured-concurrency","kind":"cancel","ports":{"java":8145,"go":8146,"python":8147,"rust":8148,"ts-node":8149}},
     {"name":"16-large-file-streaming","kind":"stream","ports":{"java":8150,"go":8151,"python":8152,"rust":8153,"ts-node":8154}},
+    {"name":"17-error-handling","kind":"error","ports":{"java":8155,"go":8156,"python":8157,"rust":8158,"ts-node":8159}},
 ]
 
 PREP_TIMEOUT = {"java":600, "go":1200, "python":600, "rust":1200, "ts-node":600}
@@ -604,11 +605,12 @@ CANCEL_CASES = [
 CANCEL_SETTLE_SLEEP = 3.0
 
 
-def http_json_get(port, path, timeout=30):
-    """GET JSON，返回 (status, parsed)。同样用 http.client 避免代理劫持。"""
+def http_json_get(port, path, timeout=30, headers=None):
+    """GET JSON，返回 (status, parsed)。同样用 http.client 避免代理劫持。
+    headers 用于场景 17 的 X-Trace-Id 回显断言。"""
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
     try:
-        conn.request("GET", path)
+        conn.request("GET", path, headers=headers or {})
         resp = conn.getresponse()
         raw = resp.read().decode("utf-8", "replace")
         try:
@@ -871,6 +873,111 @@ def verify_stream(lang, port, d, log):
         time.sleep(1)
 
 
+# ================================================================
+# 场景 17：错误处理深水区（kind=error）
+# ================================================================
+# 四层 cause_chain：最外层 → 根因。五门语言必须用各自的链机制拼出**同一串字符串**。
+ERR_CHAIN = ["handler: GET /errors/wrap_chain", "service: get profile",
+             "repository: load user", "db: row 42 not found"]
+ERR_DETAILS = ["email: required", "age: must be >= 0"]
+# "未捕获异常是否自带调用栈"是语言层面的能力差异，不是实现缺陷 —— 逐语言声明预期：
+#   Go：error 是值、panic 恢复后拿到的只是 any，不带栈（要栈得 debug.Stack() 现抓）
+#   Rust：anyhow 只在 RUST_BACKTRACE=1 时抓 backtrace，默认关闭（零成本）
+#   Java / Python / TS：异常对象天生带栈
+ERR_STACK_EXPECT = {"java": True, "go": False, "python": True, "rust": False, "ts-node": True}
+ERR_CASES = [
+    {"kind": "not_found", "status": 404, "code": "NOT_FOUND", "message": "user 42 not found",
+     "chain": ["user 42 not found"], "details": [], "recovered": False},
+    {"kind": "validation", "status": 400, "code": "VALIDATION_FAILED", "message": "invalid request",
+     "chain": ["invalid request"], "details": ERR_DETAILS, "recovered": False},
+    {"kind": "wrap_chain", "status": 500, "code": "WRAPPED", "message": ERR_CHAIN[0],
+     "chain": ERR_CHAIN, "details": [], "recovered": False},
+    {"kind": "panic", "status": 500, "code": "INTERNAL", "message": "boom-17",
+     "chain": ["boom-17"], "details": [], "recovered": True},
+    {"kind": "async_detached", "status": 202, "code": "ACCEPTED", "message": "async work spawned",
+     "chain": [], "details": [], "recovered": False},
+]
+# 脱离请求上下文的异步工作延迟 120ms 失败，给足观测窗口
+ERR_ASYNC_TIMEOUT = 8.0
+
+
+def verify_error(lang, port, d, log):
+    """场景 17 契约级断言：错误形态的一致性与"错误有没有被观测到"。
+
+    与前四个边界场景最大的不同：这里断言的是**可观测性**，而不只是返回值。
+    - panic 用例之后服务必须还能应答（证明真的兜住了，而不是进程崩了）；
+    - async_detached 之后 /stats.unhandled 必须 +1 —— 若某门语言静默丢弃了
+      脱离上下文的错误，服务照样返回 200，只有这一个字段会暴露它。
+    """
+    free_port(port)
+    with open(log, "a") as lf:
+        proc = subprocess.Popen(start_cmd(lang, port, "error", d), cwd=d, env=ENV,
+                                stdout=lf, stderr=subprocess.STDOUT, start_new_session=True)
+    try:
+        if not poll_listen(port, RUN_POLL):
+            return False, "no response on %d" % port + "\n" + tail(log)
+
+        for i, case in enumerate(ERR_CASES, 1):
+            tid = "v17-%s-%d" % (lang, i)
+            try:
+                status, body = http_json_get(port, "/errors/" + case["kind"],
+                                             timeout=30, headers={"X-Trace-Id": tid})
+            except Exception as e:
+                return False, "[%s] 请求异常: %r\n%s" % (case["kind"], e, tail(log))
+            if status != case["status"]:
+                return False, "[%s] HTTP %s（期望 %d）: %s" % (
+                    case["kind"], status, case["status"], str(body)[:300])
+            if "_raw" in body:
+                return False, "[%s] 响应不是 JSON: %s" % (case["kind"], body["_raw"])
+
+            expects = [("kind", case["kind"]), ("code", case["code"]),
+                       ("message", case["message"]), ("trace_id", tid),
+                       ("cause_chain", case["chain"]), ("details", case["details"]),
+                       ("recovered", case["recovered"])]
+            if case["kind"] == "panic":
+                expects.append(("stack_present", ERR_STACK_EXPECT[lang]))
+            else:
+                expects.append(("stack_present", False))
+            for field, want in expects:
+                got = body.get(field)
+                if got != want:
+                    return False, "[%s] 字段 %s = %r（期望 %r）" % (case["kind"], field, got, want)
+
+        # 异步错误：轮询 /stats，等 detached 工作失败并被钩子记下来
+        deadline = time.time() + ERR_ASYNC_TIMEOUT
+        stats = {}
+        while time.time() < deadline:
+            try:
+                _, stats = http_json_get(port, "/stats", timeout=10)
+            except Exception as e:
+                return False, ("panic 或异步错误之后服务已不可达 —— 未兜住的异步错误会打挂进程: %r\n%s"
+                               % (e, tail(log)))
+            if stats.get("unhandled", 0) >= 1:
+                break
+            time.sleep(0.25)
+
+        if stats.get("unhandled", 0) < 1:
+            return False, ("脱离请求上下文的错误没有被任何钩子捕获：/stats.unhandled=0 —— "
+                           "HTTP 照样是 202，这就是本场景要暴露的静默失败")
+        for field, want in (("last_unhandled", "async-boom-17"),
+                            ("panics_recovered", 1),
+                            ("handled", 4),
+                            ("last_trace_id", "v17-%s-5" % lang)):
+            got = stats.get(field)
+            if got != want:
+                return False, "/stats 字段 %s = %r（期望 %r）" % (field, got, want)
+
+        return True, ("错误契约一致：五形态逐字段相符（含四层 cause_chain、details 与 trace_id 回显）；"
+                      "未捕获异常已兜底且进程存活（panics_recovered=1）；"
+                      "脱离上下文的异步错误被钩子捕获 last_unhandled=%s；stack_present=%s"
+                      % (stats["last_unhandled"], ERR_STACK_EXPECT[lang]))
+    finally:
+        kill_tree(proc)
+        subprocess.run(["pkill", "-9", "-f", os.path.join("scenarios", os.path.basename(os.path.dirname(d)))],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(1)
+
+
 def expected_cli_counts(path):
     """基准统计口径（与 Scala/Python/Rust/Java/Go 一致的"逻辑行数"）：
     行数 = 换行符个数，末行无换行时再 +1；词数 = 按空白切分。
@@ -1014,6 +1121,8 @@ def main():
                         ok, note = verify_cancel(lang, sc["ports"][lang], d, log, env_for(name, lang))
                     elif kind == "stream":
                         ok, note = verify_stream(lang, sc["ports"][lang], d, log)
+                    elif kind == "error":
+                        ok, note = verify_error(lang, sc["ports"][lang], d, log)
                     else:
                         ok, note = False, "unknown kind"
                     st = "PASS" if ok else "FAIL"
