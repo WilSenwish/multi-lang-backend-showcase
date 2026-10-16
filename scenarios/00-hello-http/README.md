@@ -17,6 +17,23 @@ GET /hello
 
 所有语言实现**业务逻辑完全一致**，仅技术栈和风格不同。
 
+### 统一 API 契约（验证器逐字段断言）
+
+除 README 记载的主路径外，边界行为也纳入契约，五门语言必须一致：
+
+| 用例 | 请求 | 期望响应 |
+|------|------|---------|
+| 缺省 name | `GET /hello` | 200 `{"msg":"hello world"}`，`Content-Type: application/json` |
+| 显式 name | `GET /hello?name=Trae` | 200 `{"msg":"hello Trae"}` |
+| 空 name | `GET /hello?name=` | 200 `{"msg":"hello world"}`（空串按缺省处理） |
+| unicode name | `GET /hello?name=世界` | 200 `{"msg":"hello 世界"}`（原样拼接，不转义） |
+| 未匹配路径 | `GET /nope` | 404（响应体因框架而异，只断言状态码） |
+| 方法不允许 | `POST /hello` | 405（响应体因框架而异，只断言状态码） |
+
+> **加强验证时发现的差异**：fastify 对"路径匹配但方法不匹配"默认返回 **404**，
+> 而 Spring / net-http / FastAPI / axum 都返回 **405**。TS 实现已改用 `fastify.all`
+> 显式抹平（见 `ts-node/src/main.ts` 注释）。这类差异在"端口通不通"的判定下永远看不见。
+
 ---
 
 ## 实现清单

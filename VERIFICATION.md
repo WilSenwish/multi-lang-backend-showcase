@@ -4,7 +4,8 @@
 > （Java / Go / Python / Rust / TS-Node = **90 个验证单元**）的逐场景本地运行验证、缺陷修复与验证方法沉淀。
 >
 > 最后更新：2026-10-16（新增场景 17「错误处理深水区」，**可观测性首次成为可断言字段**，见 §10；
-> Phase 6 五个边界场景全部交付）
+> Phase 6 五个边界场景全部交付；**验证强度加强计划启动**——基础场景正从"端口监听"
+> 逐批升级到契约级，00/01 已完成，见 §12）
 > ｜ 验证脚本：`.wb_verify/verify_all.py`
 > ｜ 结果：`.wb_verify/all_results.json` / `.md` ｜ 历史归档：`.wb_verify/runs/`
 
@@ -40,8 +41,8 @@
 
 | # | 场景 | 类型 | 判定方式 | Java | Go | Python | Rust | TS-Node |
 |---|------|------|---------|------|----|--------|------|---------|
-| 00 | hello-http | http | 端口监听 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 01 | json-serialize | http | 端口监听 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 00 | hello-http | contract | **契约级**（6 用例：name 各形态 + 404/405 边界） | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 01 | json-serialize | contract | **契约级**（5 端点逐字段 + 规范 JSON 逐字节） | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 02 | concurrent-task | http | 端口监听 | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 03 | cli-tool | cli | 数值基准 + 选项语义 | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 04 | file-io | http | 端口监听 | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -80,6 +81,10 @@
 
 - **脚本**：`.wb_verify/verify_all.py`（覆盖 5 种语言；单个测点失败不中断整体；**始终**产出结果文件并归档到 `.wb_verify/runs/`）。
 - **判定逻辑**：
+  - `contract`：**通用用例引擎**（`verify_cases`）—— 启动服务 → 逐个发请求 → 逐字段比对
+    （`json_match` 递归子集/全等匹配，bool 与 int 分开判）。用例支持状态码、`Content-Type`、
+    期望 JSON（`exact` 控制键集合）、自定义 `assert` 回调。自场景 00 起，http 场景
+    正从"端口监听"逐批升级到契约级（当前 00、01 已完成）。
   - `http`：启动服务 → **原始 TCP 连接**探活（不用 curl/urllib，见 §7.1）→ 关闭进程组。
   - `cli`：对仓库根 `README.md` 跑 `-l -w`，把输出与**独立计算的基准值交叉核对**；
     再逐个跑 `-l` / `-w` / `-c`，校验**单选项只输出对应指标**；最后跑无选项，校验三项全输出。
@@ -425,9 +430,10 @@ Python 忘记 `& MASK`、TS 用 `number` 而非 `BigInt`、Java 用有符号输�
 
 | 层级 | 内容 | 场景 |
 |------|------|------|
-| 启动级 | 端口可连接 | 00/01/02/04/06/07/08/09/10/11 |
+| 启动级 | 端口可连接 | 02/04/06/07/08/09/10/11 |
 | 行为级 | 数值与语义契约（统计口径、选项语义、测试摘要、在途请求） | 03/05/12 |
-| **契约级** | **响应内容逐字段与 oracle 比对** | **13 / 14** |
+| **契约级** | **响应内容逐字段比对（通用用例引擎 `verify_cases`）** | **00 / 01** |
+| **契约级** | **响应内容逐字段与 oracle 比对（数值/数据类）** | **13 / 14 / 15 / 16 / 17** |
 
 ### 实测结果
 
@@ -663,3 +669,62 @@ Spring Boot 默认用 Jackson 的 camelCase 命名策略，因此 Java 实际输
 > **这是一个典型的"静默不一致"**：五门语言各自都能跑通、各自都"有响应"，
 > 唯有做契约级比对才会发现。建议在给 02 补契约级断言时一并修复。
 > 本次未改动 02，以免影响已通过的验证基线。
+
+---
+
+## 12. 验证强度加强计划（基础场景 00 → 12 逐批升级）
+
+### 背景
+
+§10 的"断言强度"表里，基础 http 场景长期停留在**启动级**（端口可连接即通过）。
+边界场景 13~17 已全部做到契约级，方法完全成熟，因此启动本计划：
+把 00~12 逐批升级，**只 commit 不推远端**，每批一个提交。
+
+批次划分（每批 = 1 个提交）：
+
+| 批次 | 场景 | 状态 |
+|------|------|------|
+| 1 | `00-hello-http` + `01-json-serialize` | ✅ 已完成 |
+| 2 | `02-concurrent-task` + `04-file-io` | ⬜ 待开始 |
+| 3 | `06-simple-rag-demo` + `07-structured-logging` | ⬜ 待开始 |
+| 4 | `08-config-management` + `09-http-client` | ⬜ 待开始 |
+| 5 | `10-rate-limit` + `11-db-crud-pool` | ⬜ 待开始 |
+| 6 | `03-cli-tool` + `05-unit-test-mock` + `12-graceful-shutdown`（行为级 → 继续加深） | ⬜ 待开始 |
+
+### 通用用例引擎
+
+`verify_all.py` 新增 `kind = "contract"` 与三个可复用部件：
+
+- `http_req()`：发请求并返回 `(status, headers, body)`，按 Content-Type 决定是否解析 JSON；
+  用 `http.client`（不走代理，避免 `HTTP_PROXY` 把 localhost 劫持成 502）。
+- `json_match()`：递归比对 —— dict 默认子集匹配（`exact=True` 时键集合也必须相同）、
+  list 等长逐元素、标量严格相等；**bool 与 int 分开判**（避免 `True == 1` 假阳性）。
+- `verify_cases()`：启动服务 → 逐个执行用例 → 汇总失败原因。
+  用例是声明式 dict（`status` / `content_type` / `json` / `assert` 回调），
+  新场景接入只需写一个 `CASES_xx` 列表 + 注册进 `CONTRACT_VERIFIERS`。
+
+### 批次 1（00 + 01）实测：升级第一天就抓到 5 处跨语言偏差
+
+**场景 00**：6 个用例（缺省 / 显式 / 空 / unicode name、未匹配路径 404、方法不允许 405）
+五门语言全绿。其中"非 GET → 405"一条**首跑即失败**：fastify 对"路径匹配但方法不匹配"
+默认返回 **404**，而 Spring / net-http / FastAPI / axum 都返回 **405**。
+TS 侧已改用 `fastify.all` 显式抹平 —— 这类差异在端口监听级判定下永远看不见。
+
+**场景 01**：5 个端点逐字段 + `json` 字符串逐字节比对。首跑抓到 4 处偏差（均已修复）：
+
+| 语言 | 偏差 | 修正 |
+|------|------|------|
+| Go | `json.Marshal` 默认把 `<` `>` `&` 转义成 `\u003c` 等（HTML 转义） | `json.Encoder` + `SetEscapeHTML(false)`（新增 `encodeJSON` 辅助函数） |
+| Python | `json.dumps` 默认 `ensure_ascii=True` + 带空格分隔符 | 统一 `ensure_ascii=False, separators=(",", ":")` |
+| Python | `/deserialize` 的 `size` 用 `len(str)`（字符数，其余四门是字节数） | `len(json_string.encode("utf-8"))` |
+| TS-Node | `/deserialize` 的 `size` 用 `string.length`（UTF-16 单元数） | `Buffer.byteLength(json_string)` |
+
+**方法论沉淀**：本轮失败全部集中在 `roundtrip` 端点 —— 因为 `/serialize` 修完之后，
+`roundtrip` 里还有一份独立的序列化调用被漏掉。**同一契约在多处落地时，断言必须覆盖每一处**，
+否则"改了一处就以为全改了"。
+
+**载荷设计**：测试载荷键名按字母序排列 —— Go 的 `map` 与 Rust 的 `BTreeMap` 按键排序输出，
+Python / Java / TS 保留输入顺序；排序输入让五门语言的 `json` 字符串可逐字节比对，
+同时把"键序差异"这个事实写进 README 而不是藏进实现。
+
+批次 1 结果：`python3 .wb_verify/verify_all.py 00 01` → **10/10 全绿**（归档见 `.wb_verify/runs/20261016-223045_sub-00_01.md`）。

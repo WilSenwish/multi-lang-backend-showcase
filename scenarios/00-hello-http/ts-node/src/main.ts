@@ -25,7 +25,10 @@ const fastify = Fastify({
 const nameSchema = z.string().trim().max(64);
 
 // GET /hello
-fastify.get<{ Querystring: { name?: string } }>(
+// 注意用 fastify.all 而不是 fastify.get：fastify 对"路径匹配但方法不匹配"默认返回 404，
+// 而另外四门语言（Spring/net-http/FastAPI/axum）都返回 405 —— 这是 fastify 的已知差异，
+// 这里显式抹平，让五门语言的 HTTP 语义一致（契约：非 GET → 405）。
+fastify.all<{ Querystring: { name?: string } }>(
   '/hello',
   {
     schema: {
@@ -44,6 +47,10 @@ fastify.get<{ Querystring: { name?: string } }>(
     },
   },
   async (request, reply): Promise<HelloResponse> => {
+    if (request.method !== 'GET') {
+      reply.code(405);
+      return { msg: 'method not allowed' };
+    }
     const raw = request.query.name;
     const name = raw ? nameSchema.parse(raw) : DEFAULT_NAME;
     return { msg: `hello ${name || DEFAULT_NAME}` };

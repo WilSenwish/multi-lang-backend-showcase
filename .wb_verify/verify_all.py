@@ -68,8 +68,8 @@ def env_for(name, lang):
 LANGS = ["java", "go", "python", "rust", "ts-node"]
 # 完整端口表(5 种语言)；03=cli, 05=test, 12=graceful
 SCENARIOS = [
-    {"name":"00-hello-http","kind":"http","ports":{"java":8080,"go":8081,"python":8082,"rust":8083,"ts-node":8084}},
-    {"name":"01-json-serialize","kind":"http","ports":{"java":8090,"go":8091,"python":8092,"rust":8093,"ts-node":8094}},
+    {"name":"00-hello-http","kind":"contract","ports":{"java":8080,"go":8081,"python":8082,"rust":8083,"ts-node":8084}},
+    {"name":"01-json-serialize","kind":"contract","ports":{"java":8090,"go":8091,"python":8092,"rust":8093,"ts-node":8094}},
     {"name":"02-concurrent-task","kind":"http","ports":{"java":8085,"go":8086,"python":8087,"rust":8088,"ts-node":8089}},
     {"name":"03-cli-tool","kind":"cli"},
     {"name":"04-file-io","kind":"http","ports":{"java":8095,"go":8096,"python":8097,"rust":8098,"ts-node":8099}},
@@ -978,6 +978,241 @@ def verify_error(lang, port, d, log):
         time.sleep(1)
 
 
+# ---------------- 契约级断言（http 类：通用用例引擎，自场景 00 起逐场景加强） ----------------
+# 动机：此前的 http 场景只判定"端口通不通"——服务返回什么、返回得对不对一概不知。
+# 这里提供声明式用例引擎：启动服务 → 逐个发请求 → 逐字段比对，
+# 让每个 http 场景都能从"启动级"升级到"契约级"。
+#
+# json_match 匹配语义：
+#  - dict：期望里的每个键都必须存在且递归匹配；exact=True 时键集合还必须完全相同
+#  - list：等长 + 逐元素递归
+#  - 标量：严格相等；bool 与 int 分开判（避免 True == 1 的假阳性）
+def http_req(port, method, path, body=None, headers=None, timeout=30):
+    """发一个 HTTP 请求，返回 (status, headers(键小写), body)。
+    body 为 dict 时以 JSON 发送；响应按 Content-Type 决定是否解析为 JSON，失败退化为文本。
+    用 http.client 而不是 urllib：前者默认不走代理，避免 HTTP_PROXY 把 localhost 请求劫持成 502。"""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    try:
+        payload = None
+        hdrs = dict(headers or {})
+        if body is not None:
+            payload = json.dumps(body)
+            hdrs.setdefault("Content-Type", "application/json")
+        conn.request(method, path, payload, hdrs)
+        resp = conn.getresponse()
+        raw = resp.read()
+        text = raw.decode("utf-8", "replace")
+        ctype = (resp.getheader("Content-Type") or "").lower()
+        parsed = text
+        if "json" in ctype:
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = text
+        return resp.status, {k.lower(): v for k, v in resp.getheaders()}, parsed
+    finally:
+        conn.close()
+
+
+def json_match(expected, actual, exact=False, path="$"):
+    """递归比对，返回错误信息列表（空列表 = 通过）。"""
+    errs = []
+    if isinstance(expected, dict):
+        if not isinstance(actual, dict):
+            return ["%s: 期望对象，实际 %s" % (path, type(actual).__name__)]
+        if exact and set(actual) != set(expected):
+            errs.append("%s: 键集合不一致 actual=%s expected=%s"
+                        % (path, sorted(actual), sorted(expected)))
+        for k, v in expected.items():
+            if k not in actual:
+                errs.append("%s: 缺少键 %r" % (path, k))
+            else:
+                errs += json_match(v, actual[k], exact, "%s.%s" % (path, k))
+    elif isinstance(expected, list):
+        if not isinstance(actual, list):
+            return ["%s: 期望数组，实际 %s" % (path, type(actual).__name__)]
+        if len(expected) != len(actual):
+            errs.append("%s: 数组长度 %d != %d" % (path, len(actual), len(expected)))
+        else:
+            for i, (e, a) in enumerate(zip(expected, actual)):
+                errs += json_match(e, a, exact, "%s[%d]" % (path, i))
+    elif isinstance(expected, bool) or isinstance(actual, bool):
+        if type(expected) is not type(actual) or expected != actual:
+            errs.append("%s: %r != %r" % (path, actual, expected))
+    elif expected != actual:
+        errs.append("%s: %r != %r" % (path, actual, expected))
+    return errs
+
+
+def verify_cases(lang, port, d, log, cases, env=None):
+    """契约级断言引擎。
+    用例字段：name / method / path / body / headers / status / status_in /
+             content_type / json(+exact) / assert(自定义校验)。
+    assert 签名：f(status, headers, body, fails, label)——往里 append 错误信息即可。"""
+    free_port(port)
+    with open(log, "a") as lf:
+        proc = subprocess.Popen(start_cmd(lang, port, "http", d), cwd=d, env=env or ENV,
+                                stdout=lf, stderr=subprocess.STDOUT, start_new_session=True)
+    try:
+        if not poll_listen(port, RUN_POLL):
+            return False, "no response on %d" % port + "\n" + tail(log)
+        fails = []
+        for c in cases:
+            label = c.get("name", "%s %s" % (c.get("method", "GET"), c.get("path", "/")))
+            try:
+                status, headers, body = http_req(port, c.get("method", "GET"), c.get("path", "/"),
+                                                 c.get("body"), c.get("headers"))
+            except Exception as e:
+                fails.append("[%s] 请求失败: %r" % (label, e))
+                continue
+            if "status" in c and status != c["status"]:
+                fails.append("[%s] HTTP %d（期望 %d）" % (label, status, c["status"]))
+            if "status_in" in c and status not in c["status_in"]:
+                fails.append("[%s] HTTP %d（期望 %s 之一）" % (label, status, c["status_in"]))
+            if "content_type" in c and c["content_type"] not in headers.get("content-type", ""):
+                fails.append("[%s] Content-Type=%r 不含 %r"
+                             % (label, headers.get("content-type", ""), c["content_type"]))
+            if "json" in c:
+                fails += ["[%s] %s" % (label, e)
+                          for e in json_match(c["json"], body, exact=c.get("exact", False))]
+            if "assert" in c:
+                c["assert"](status, headers, body, fails, label)
+        if fails:
+            return False, "；".join(fails[:5]) + ("……共 %d 处不符" % len(fails) if len(fails) > 5 else "")
+        return True, "%d 个用例逐字段通过" % len(cases)
+    finally:
+        kill_tree(proc)
+        subprocess.run(["pkill", "-9", "-f", os.path.join("scenarios", os.path.basename(os.path.dirname(d)))],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(1)
+
+
+# ================= 场景 00：最小 HTTP 服务 =================
+# 契约（README 已记载的行为 + 显式化的边界行为）：
+#   GET /hello?name=X → 200 {"msg":"hello X"}；X 缺省或为空串 → "hello world"
+#   未匹配路径        → 404（响应体因框架而异，只断言状态码）
+#   非 GET 方法       → 405（fastify 默认给 404，实现侧已抹平）
+CASES_00 = [
+    {"name": "缺省 name", "method": "GET", "path": "/hello", "status": 200,
+     "content_type": "application/json", "json": {"msg": "hello world"}, "exact": True},
+    {"name": "显式 name", "method": "GET", "path": "/hello?name=Trae", "status": 200,
+     "json": {"msg": "hello Trae"}, "exact": True},
+    {"name": "空 name 按缺省处理", "method": "GET", "path": "/hello?name=", "status": 200,
+     "json": {"msg": "hello world"}, "exact": True},
+    {"name": "unicode name 原样拼接", "method": "GET", "path": "/hello?name=%E4%B8%96%E7%95%8C",
+     "status": 200, "json": {"msg": "hello 世界"}, "exact": True},
+    {"name": "未匹配路径", "method": "GET", "path": "/nope", "status": 404},
+    {"name": "方法不允许", "method": "POST", "path": "/hello", "status": 405},
+]
+
+
+def verify_00(lang, port, d, log):
+    return verify_cases(lang, port, d, log, CASES_00)
+
+
+# ================= 场景 01：JSON 序列化/反序列化 =================
+# 契约载荷：**键名按字母序排列**。Go 的 map 与 Rust 的 BTreeMap 按 key 排序输出，
+# Python/Java/TS 保留输入顺序——用排序输入作载荷，五门语言的 `json` 字符串才能逐字节比对。
+P01_PAYLOAD = {"age": 28, "cn": "世界", "empty": [], "html": "<b> & 'x'",
+               "nested": {"a": 2, "z": 1}, "nil": None, "tags": ["a", "b"]}
+# 契约规定的规范序列化形式：紧凑分隔符、非 ASCII 不转义、HTML 字符不转义。
+# （Go 的 json.Marshal 默认把 < > & 转义成 \u003c 等，Python 的 json.dumps 默认把非 ASCII
+#   转义成 \uXXXX——都不符合"标准 JSON"，实现侧已按本契约修正。）
+P01_CANON = json.dumps(P01_PAYLOAD, ensure_ascii=False, separators=(",", ":"))
+P01_BYTES = len(P01_CANON.encode("utf-8"))
+# /demo 与 /bench 共用的标准对象（五门语言字段顺序一致：id,name,email,age,tags,address,scores）
+P01_DEMO = {"id": 1, "name": "Alice", "email": None, "age": 28,
+            "tags": ["engineer", "java"],
+            "address": {"city": "Beijing", "zip": "100000"},
+            "scores": []}
+P01_DEMO_BYTES = len(json.dumps(P01_DEMO, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+
+def _p01_check_serialize(status, headers, body, fails, label):
+    if not isinstance(body, dict):
+        fails.append("[%s] 响应不是 JSON 对象: %r" % (label, body))
+        return
+    if body.get("json") != P01_CANON:
+        fails.append("[%s] json 字段非规范形式: %r" % (label, body.get("json")))
+    if body.get("bytes") != P01_BYTES:
+        fails.append("[%s] bytes=%r（期望 UTF-8 字节数 %d）" % (label, body.get("bytes"), P01_BYTES))
+    if not isinstance(body.get("time_us"), int) or isinstance(body.get("time_us"), bool) \
+            or body.get("time_us") < 0:
+        fails.append("[%s] time_us=%r 不是非负整数" % (label, body.get("time_us")))
+    try:
+        if json.loads(body.get("pretty") or "") != P01_PAYLOAD:
+            fails.append("[%s] pretty 解析回的对象与载荷不一致" % label)
+    except Exception as e:
+        fails.append("[%s] pretty 无法解析: %r" % (label, e))
+
+
+def _p01_check_deserialize(status, headers, body, fails, label):
+    if not isinstance(body, dict):
+        fails.append("[%s] 响应不是 JSON 对象: %r" % (label, body))
+        return
+    fails += json_match(P01_PAYLOAD, body.get("parsed"), exact=True, path="%s.parsed" % label)
+    if body.get("size") != P01_BYTES:
+        fails.append("[%s] size=%r（期望 UTF-8 字节数 %d，不是字符数）"
+                     % (label, body.get("size"), P01_BYTES))
+
+
+def _p01_check_roundtrip(status, headers, body, fails, label):
+    if not isinstance(body, dict):
+        fails.append("[%s] 响应不是 JSON 对象: %r" % (label, body))
+        return
+    if body.get("equal") is not True:
+        fails.append("[%s] equal=%r（期望 true）" % (label, body.get("equal")))
+    for f in ("original_json", "roundtrip_json"):
+        if body.get(f) != P01_CANON:
+            fails.append("[%s] %s=%r 与规范形式不一致" % (label, f, body.get(f)))
+    for f in ("original_bytes", "roundtrip_bytes"):
+        if body.get(f) != P01_BYTES:
+            fails.append("[%s] %s=%r（期望 %d）" % (label, f, body.get(f), P01_BYTES))
+
+
+def _p01_check_bench(status, headers, body, fails, label):
+    if not isinstance(body, dict):
+        fails.append("[%s] 响应不是 JSON 对象: %r" % (label, body))
+        return
+    if body.get("iterations") != 10000:
+        fails.append("[%s] iterations=%r（期望 10000）" % (label, body.get("iterations")))
+    if body.get("json_size_bytes") != P01_DEMO_BYTES:
+        fails.append("[%s] json_size_bytes=%r（期望 demo 对象序列化字节数 %d）"
+                     % (label, body.get("json_size_bytes"), P01_DEMO_BYTES))
+    if not isinstance(body.get("language"), str) or not body.get("language"):
+        fails.append("[%s] language=%r 不是非空字符串" % (label, body.get("language")))
+    for f in ("total_time_ms", "avg_time_us"):
+        v = body.get(f)
+        if not isinstance(v, (int, float)) or isinstance(v, bool) or v < 0:
+            fails.append("[%s] %s=%r 不是非负数值" % (label, f, v))
+
+
+CASES_01 = [
+    {"name": "GET /demo 标准测试对象", "method": "GET", "path": "/demo", "status": 200,
+     "json": P01_DEMO, "exact": True},
+    {"name": "POST /serialize 规范序列化", "method": "POST", "path": "/serialize",
+     "body": P01_PAYLOAD, "status": 200, "assert": _p01_check_serialize},
+    {"name": "POST /deserialize 回解析", "method": "POST", "path": "/deserialize",
+     "body": {"json_string": P01_CANON}, "status": 200, "assert": _p01_check_deserialize},
+    {"name": "POST /roundtrip 往返保真", "method": "POST", "path": "/roundtrip",
+     "body": P01_PAYLOAD, "status": 200, "assert": _p01_check_roundtrip},
+    {"name": "GET /bench 性能基准字段", "method": "GET", "path": "/bench", "status": 200,
+     "assert": _p01_check_bench},
+]
+
+
+def verify_01(lang, port, d, log):
+    return verify_cases(lang, port, d, log, CASES_01)
+
+
+# kind == "contract" 的场景注册表。SCENARIOS 定义在文件顶部，这里用名字查表
+# （而不是在 SCENARIOS 里直接引用函数）以避免前向引用。
+CONTRACT_VERIFIERS = {
+    "00-hello-http": verify_00,
+    "01-json-serialize": verify_01,
+}
+
+
 def expected_cli_counts(path):
     """基准统计口径（与 Scala/Python/Rust/Java/Go 一致的"逻辑行数"）：
     行数 = 换行符个数，末行无换行时再 +1；词数 = 按空白切分。
@@ -1123,6 +1358,9 @@ def main():
                         ok, note = verify_stream(lang, sc["ports"][lang], d, log)
                     elif kind == "error":
                         ok, note = verify_error(lang, sc["ports"][lang], d, log)
+                    elif kind == "contract":
+                        # 契约级：逐用例发请求 + 逐字段比对（见 CONTRACT_VERIFIERS）
+                        ok, note = CONTRACT_VERIFIERS[name](lang, sc["ports"][lang], d, log)
                     else:
                         ok, note = False, "unknown kind"
                     st = "PASS" if ok else "FAIL"

@@ -66,6 +66,8 @@ fastify.post('/serialize', async (request, reply) => {
 });
 
 // POST /deserialize — JSON 字符串 → 对象
+// size 的契约口径是 UTF-8 字节数（Buffer.byteLength）；TS 的 string.length 是
+// UTF-16 代码单元数，含非 ASCII 时与另外四门语言不一致。
 fastify.post<{ Body: DeserializeBody }>('/deserialize', async (request, reply) => {
   const { json_string } = request.body;
 
@@ -76,7 +78,7 @@ fastify.post<{ Body: DeserializeBody }>('/deserialize', async (request, reply) =
   return {
     parsed: parsed,
     time_us: elapsedUs,
-    size: json_string.length,
+    size: Buffer.byteLength(json_string),
   };
 });
 

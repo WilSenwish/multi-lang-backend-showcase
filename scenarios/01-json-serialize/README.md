@@ -133,6 +133,39 @@ done
 | POST | `/roundtrip` | 往返保真：serialize → deserialize → serialize → 返回 `{equal}` |
 | GET | `/bench` | 10000 次循环 → 返回 `{language, iterations, total_time_ms, avg_time_us}` |
 
+### 契约级断言（验证器逐字段 / 逐字节比对）
+
+判定强度已从"端口监听"升级为契约级，五门语言必须同时满足：
+
+1. **`/demo` 精确相等**：7 个字段逐一比对（含 `email: null`、`scores: []`、嵌套 `address`），键集合也必须完全相同。
+2. **`/serialize` 规范序列化形式**：`json` 字段必须等于契约规定的规范字符串 ——
+   **紧凑分隔符、非 ASCII 不转义、HTML 字符（`<` `>` `&`）不转义**；
+   `bytes` 必须等于该字符串的 UTF-8 字节数；`pretty` 必须能解析回同一对象。
+3. **`/deserialize` 语义 + 口径**：`parsed` 与输入载荷深度相等；`size` 的契约口径是
+   **UTF-8 字节数**（Go `len()` / Java `getBytes().length()` / Rust `String::len()` /
+   TS `Buffer.byteLength()` 天然就是字节数；Python `len(str)` 是字符数、TS `string.length`
+   是 UTF-16 单元数，含非 ASCII 时会偏小，实现侧已显式换算）。
+4. **`/roundtrip` 往返保真**：`equal` 必须为 `true`，`original_json` 与 `roundtrip_json`
+   都必须等于规范字符串，两个 `bytes` 字段等于字节数。
+5. **`/bench` 字段自洽**：`iterations == 10000`；`json_size_bytes` 必须等于 `/demo`
+   对象规范序列化后的字节数（与 `/demo` 响应体交叉验证，防止"计数对、内容错"）。
+
+> **键序说明**：Go 的 `map` 与 Rust 的 `BTreeMap` 按键名排序输出，Python / Java / TS
+> 保留输入顺序。因此验证器的测试载荷**键名按字母序排列**，五门语言的 `json`
+> 字符串才能逐字节比对；这不是把差异"藏起来"，而是让载荷对排序差异免疫。
+
+### 加强验证时发现并修正的跨语言偏差
+
+| 语言 | 偏差 | 修正 |
+|------|------|------|
+| Go | `json.Marshal` / `MarshalIndent` 默认把 `<` `>` `&` 转义成 `\u003c` 等 | 改用 `json.Encoder` + `SetEscapeHTML(false)`（新增 `encodeJSON` 辅助函数） |
+| Python | `json.dumps` 默认 `ensure_ascii=True`，非 ASCII 变 `\uXXXX`；默认分隔符带空格 | `/serialize`、`/roundtrip`、`/bench` 统一 `ensure_ascii=False, separators=(",", ":")` |
+| Python | `/deserialize` 的 `size` 用 `len(str)`（字符数） | 改为 `len(json_string.encode("utf-8"))` |
+| TS-Node | `/deserialize` 的 `size` 用 `string.length`（UTF-16 单元数） | 改为 `Buffer.byteLength(json_string)` |
+
+这些偏差在"端口监听"级判定下全部不可见 —— 服务起得来、HTTP 200、字段名一个不差，
+只有把响应体拉到字节级比对才会暴露。
+
 ---
 
 ## 选型思考

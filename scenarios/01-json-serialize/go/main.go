@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -64,6 +65,23 @@ func demoHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, demoUser())
 }
 
+// encodeJSON 按契约序列化：紧凑分隔符 + 不转义 HTML 字符。
+// Go 的 json.Marshal / json.MarshalIndent 默认会把 < > & 转义成 \u003c \u003e \u0026，
+// 与另外四门语言的"标准 JSON"不一致 —— 只有 Encoder 能关掉（SetEscapeHTML(false)）。
+// Encoder.Encode 会在末尾补一个换行，这里 TrimRight 掉。indent 为空串时输出紧凑形式。
+func encodeJSON(v interface{}, indent string) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if indent != "" {
+		enc.SetIndent("", indent)
+	}
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+}
+
 // POST /serialize
 func serializeHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -78,14 +96,14 @@ func serializeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	start := time.Now()
-	data, err := json.Marshal(body)
+	data, err := encodeJSON(body, "")
 	if err != nil {
 		http.Error(w, "marshal error: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	elapsedUs := time.Since(start).Microseconds()
 
-	pretty, _ := json.MarshalIndent(body, "", "  ")
+	pretty, _ := encodeJSON(body, "  ")
 
 	resp := map[string]interface{}{
 		"json":      string(data),
@@ -144,12 +162,23 @@ func roundtripHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	json1, _ := json.Marshal(body)
+	json1, err := encodeJSON(body, "")
+	if err != nil {
+		http.Error(w, "marshal error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	var parsed interface{}
-	json.Unmarshal(json1, &parsed)
+	if err := json.Unmarshal(json1, &parsed); err != nil {
+		http.Error(w, "unmarshal error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 
-	json2, _ := json.Marshal(parsed)
+	json2, err := encodeJSON(parsed, "")
+	if err != nil {
+		http.Error(w, "marshal error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	resp := map[string]interface{}{
 		"original_json":   string(json1),

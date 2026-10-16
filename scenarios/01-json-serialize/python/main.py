@@ -74,22 +74,31 @@ def demo() -> User:
 
 @app.post("/serialize")
 def serialize(body: dict) -> dict:
-    """POST /serialize — 对象 → JSON 字符串"""
+    """POST /serialize — 对象 → JSON 字符串
+
+    契约规定的规范形式：紧凑分隔符 + 非 ASCII 不转义（ensure_ascii=False）。
+    Python 的 json.dumps 默认会把非 ASCII 转义成 \\uXXXX，与另外四门语言不一致。
+    """
     start = time.perf_counter()
-    json_str = json.dumps(body)
+    json_str = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
     elapsed_us = int((time.perf_counter() - start) * 1_000_000)
 
     return {
         "json": json_str,
         "bytes": len(json_str.encode()),
         "time_us": elapsed_us,
-        "pretty": json.dumps(body, indent=2),
+        "pretty": json.dumps(body, ensure_ascii=False, indent=2),
     }
 
 
 @app.post("/deserialize")
 def deserialize(body: dict) -> dict:
-    """POST /deserialize — JSON 字符串 → 对象"""
+    """POST /deserialize — JSON 字符串 → 对象
+
+    size 的契约口径是 **UTF-8 字节数**（与 Go len() / Java getBytes().length() /
+    Rust String::len() / TS Buffer.byteLength() 一致）；Python 的 len(str) 是字符数，
+    含非 ASCII 时会偏小，必须 encode 后取长度。
+    """
     json_string = body.get("json_string", "")
     start = time.perf_counter()
     parsed = json.loads(json_string)
@@ -98,16 +107,20 @@ def deserialize(body: dict) -> dict:
     return {
         "parsed": parsed,
         "time_us": elapsed_us,
-        "size": len(json_string),
+        "size": len(json_string.encode("utf-8")),
     }
 
 
 @app.post("/roundtrip")
 def roundtrip(body: dict) -> dict:
-    """POST /roundtrip — 往返保真测试"""
-    json1 = json.dumps(body)
+    """POST /roundtrip — 往返保真测试
+
+    与 /serialize 同一套规范形式：紧凑分隔符 + ensure_ascii=False，
+    否则 original_json 会带上空格与 \\uXXXX 转义，和另外四门语言逐字节比对不上。
+    """
+    json1 = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
     parsed = json.loads(json1)
-    json2 = json.dumps(parsed)
+    json2 = json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
 
     return {
         "original_json": json1,
@@ -135,7 +148,9 @@ def bench() -> dict:
     start = time.perf_counter()
     last_json = ""
     for _ in range(iterations):
-        last_json = json.dumps(user_dict)
+        # 与 /serialize 同一套规范形式：紧凑 + 不转义非 ASCII。
+        # json_size_bytes 的契约是"规范序列化后的字节数"，用默认分隔符会偏大。
+        last_json = json.dumps(user_dict, ensure_ascii=False, separators=(",", ":"))
         json.loads(last_json)
     total_ms = int((time.perf_counter() - start) * 1000)
 
