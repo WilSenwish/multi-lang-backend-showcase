@@ -80,7 +80,10 @@ Multi-Lang-Backend-Showcase/
 │   ├── 09-http-client/       # HTTP 客户端（超时/重试）
 │   ├── 10-rate-limit/        # 单机内存限流
 │   ├── 11-db-crud-pool/      # 数据库 CRUD + 连接池
-│   └── 12-graceful-shutdown/ # 优雅关闭
+│   ├── 12-graceful-shutdown/ # 优雅关闭
+│   │
+│   └── ── 边界场景（某些语言天生不擅长，用于突出技术选型）──
+│       └── 13-cpu-bound-parallel/ # CPU 密集并行计算 ⭐
 │
 └── bench/                    # 压测脚本
     └── http-bench.sh         # wrk/curl 压测脚本
@@ -205,9 +208,19 @@ bash bench/http-bench.sh
 | **Phase 3** | `04-file-io` / `05-unit-test-mock` / `06-simple-rag-demo`（Agent 亮点） | ✅ 已完成 |
 | **Phase 4** | `07-structured-logging` / `08-config-management` / `09-http-client` | ✅ 已完成 |
 | **Phase 5** | `10-rate-limit` / `11-db-crud-pool` / `12-graceful-shutdown` | ✅ 已完成 |
+| **Phase 6** | 边界场景：`13-cpu-bound-parallel`（CPU 密集并行计算） | 🚧 进行中 |
 
 > **⚠️ 严格按顺序完成，不要追求大而全**。优先保证每个 demo 可运行、文档写到位。
 > **🔍 13 个场景 × 5 语言本地验证结果见 [VERIFICATION.md](VERIFICATION.md)**（含沙箱环境限制说明）。
+
+### 前置 13 个场景 vs 边界场景
+
+前 13 个场景的设计前提是「**五门语言都能做**，差异在范式与心智负担」——这保证了对比公平，
+但也无法回答「**什么时候某门语言根本不该上场**」。边界场景用来补上这一环：
+
+| 边界场景 | 谁的主场 | 谁需要补救 | 补救代价 |
+|---------|---------|-----------|---------|
+| `13-cpu-bound-parallel` | Rust / Go / Java | Python（GIL）、TS(Node)（单线程 + 无 64 位整数） | Python 须换 `multiprocessing`（序列化成本）；Node 须 `worker_threads` + `BigInt`（慢一个数量级） |
 
 ---
 

@@ -10,6 +10,9 @@
 #  - 05-unit-test-mock: 跑各语言测试框架，按退出码 + 测试摘要判定
 #  - 12-graceful-shutdown: 启动 -> 先丢一个耗时请求 -> 给"监听进程"发 SIGTERM ->
 #                          必须：在途请求正常拿到响应 + 监听释放 + 日志有关闭完成标记 + 无崩溃特征
+#  - 13-cpu-bound-parallel: **契约级**断言。验证器用 Python 独立实现同一套 uint64 环绕算法作为
+#                          oracle，逐任务比对 checksum —— 位运算语义写错（忘 & MASK / 用 number
+#                          而非 BigInt / 有符号输出）在"端口通"的判定下不可能被发现。
 #  - 每个 (场景,语言) 用 try/except 包裹，单个失败/超时不影响其余；超时返回 -999
 #  - 最后一定写出 JSON/MD 结果（含中断保护）
 import os, re, shutil, sys, subprocess, time, signal, json, socket, threading, http.client, urllib.request, urllib.error, traceback
@@ -62,6 +65,8 @@ SCENARIOS = [
     {"name":"10-rate-limit","kind":"http","ports":{"java":8120,"go":8121,"python":8122,"rust":8123,"ts-node":8124}},
     {"name":"11-db-crud-pool","kind":"http","ports":{"java":8125,"go":8126,"python":8127,"rust":8128,"ts-node":8129}},
     {"name":"12-graceful-shutdown","kind":"graceful","ports":{"java":8130,"go":8131,"python":8132,"rust":8133,"ts-node":8134}},
+    # 13+ 为"边界场景"：CPU 密集 / 数据分析 / 结构化并发 / 大文件流式 / 错误处理
+    {"name":"13-cpu-bound-parallel","kind":"compute","ports":{"java":8135,"go":8136,"python":8137,"rust":8138,"ts-node":8139}},
 ]
 
 PREP_TIMEOUT = {"java":600, "go":1200, "python":600, "rust":1200, "ts-node":600}
@@ -155,7 +160,7 @@ def start_cmd(lang, port, kind, d):
         if lang == "rust": return ["cargo", "test"]
         if lang == "ts-node": return ["npx", "vitest", "run"]
         if lang == "python": return ["pytest", "-q"]
-    # http / graceful
+    # http / graceful / compute 共用同一套启动命令（compute 只换了判定方式）
     if lang == "java": return ["mvn", "-q", "-DskipTests", "spring-boot:run"]
     if lang == "go": return ["go", "run", "."]
     if lang == "python": return ["bash", "-c", "uvicorn main:app --port %d" % port]
@@ -305,6 +310,115 @@ def verify_graceful(lang, port, d, log):
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(1)
 
+# ---------------- 契约级断言（compute 类：13-cpu-bound-parallel 起） ----------------
+# 思路：验证器用 Python **独立实现**一遍任务体算法作为 oracle，
+# 再把各语言返回的 checksum 与之逐位比对 —— 不需要跨语言聚合，
+# 每个语言都能独立判定，且能精确指出是哪个任务的哪一位不一致。
+COMPUTE_SPEC = {"task_count": 4, "iterations": 300000, "concurrency": 2}
+
+_U64_MASK = (1 << 64) - 1
+
+
+def oracle_state(task_id, iterations):
+    """任务体算法的 Python 独立实现（uint64 环绕 LCG）。"""
+    state = (task_id + 1) & _U64_MASK
+    for _ in range(iterations):
+        state = (state * 6364136223846793005 + 1442695040888963407) & _U64_MASK
+    return state
+
+
+def oracle_expected(spec):
+    """返回 (逐任务期望 checksum 列表, 期望总 checksum)。"""
+    checks = [oracle_state(i, spec["iterations"]) for i in range(spec["task_count"])]
+    return checks, sum(checks) & _U64_MASK
+
+
+def http_json_post(port, path, payload, timeout=300):
+    """POST JSON，返回 (status, parsed)。
+    用 http.client 而非 urllib：前者默认不走系统代理，
+    避免 HTTP_PROXY 把 localhost 请求劫持成 502（见文件头 §7.1）。"""
+    body = json.dumps(payload).encode("utf-8")
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    try:
+        conn.request("POST", path, body=body, headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        raw = resp.read().decode("utf-8", "replace")
+        try:
+            return resp.status, json.loads(raw)
+        except Exception:
+            return resp.status, {"_raw": raw[:400]}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def verify_compute(lang, port, d, log):
+    """场景 13 契约级断言：不只看"端口通了"，而是逐字段核对响应内容。
+
+    为什么必须做契约级而不是端口探活：
+      本场景的"行为"就是 checksum。若某门语言的整数语义写错
+      （Python 忘记 & MASK、TS 用 number 而非 BigInt、Java 用有符号输出），
+      服务照样能起来、端口照样通 —— 只有比对 checksum 才能发现。
+    """
+    free_port(port)
+    with open(log, "a") as lf:
+        proc = subprocess.Popen(start_cmd(lang, port, "compute", d), cwd=d, env=ENV,
+                                stdout=lf, stderr=subprocess.STDOUT, start_new_session=True)
+    try:
+        if not poll_listen(port, RUN_POLL):
+            return False, "no response on %d" % port + "\n" + tail(log)
+
+        want_checks, want_total = oracle_expected(COMPUTE_SPEC)
+
+        t0 = time.time()
+        try:
+            status, body = http_json_post(port, "/compute", COMPUTE_SPEC)
+        except Exception as e:
+            return False, "请求 /compute 失败: %r\n%s" % (e, tail(log))
+        elapsed = time.time() - t0
+
+        if status != 200:
+            return False, "HTTP %s（期望 200）: %s" % (status, str(body)[:200])
+
+        # 回显字段必须与请求一致。
+        # 注意：请求字段名与响应字段名不同名（task_count → total_tasks），必须逐项映射，
+        # 不能拿请求的 key 直接去索引响应。
+        for field, want in (("total_tasks", COMPUTE_SPEC["task_count"]),
+                            ("iterations", COMPUTE_SPEC["iterations"]),
+                            ("concurrency", COMPUTE_SPEC["concurrency"])):
+            if body.get(field) != want:
+                return False, "%s 回显不符: 期望 %s，实际 %s" % (field, want, body.get(field))
+
+        results = body.get("results")
+        if not isinstance(results, list) or len(results) != COMPUTE_SPEC["task_count"]:
+            return False, "results 长度不符: %s" % (
+                len(results) if isinstance(results, list) else repr(results)[:120])
+
+        for i, r in enumerate(results):
+            if r.get("id") != i:
+                return False, "results[%d].id=%s（期望 %d，须按 id 升序）" % (i, r.get("id"), i)
+            got = str(r.get("checksum"))
+            if got != str(want_checks[i]):
+                return False, ("task %d checksum 与 oracle 不一致: 实际 %s / 期望 %s"
+                               % (i, got, want_checks[i]))
+
+        if str(body.get("checksum")) != str(want_total):
+            return False, ("总 checksum 与 oracle 不一致: 实际 %s / 期望 %s"
+                           % (body.get("checksum"), want_total))
+
+        return True, ("契约一致：%d 个任务 checksum 与 oracle 逐一相符，总和=%s；"
+                      "本轮耗时 %.1fs（iterations=%d, concurrency=%d）"
+                      % (COMPUTE_SPEC["task_count"], want_total, elapsed,
+                         COMPUTE_SPEC["iterations"], COMPUTE_SPEC["concurrency"]))
+    finally:
+        kill_tree(proc)
+        subprocess.run(["pkill", "-9", "-f", os.path.join("scenarios", os.path.basename(os.path.dirname(d)))],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(1)
+
+
 def expected_cli_counts(path):
     """基准统计口径（与 Scala/Python/Rust/Java/Go 一致的"逻辑行数"）：
     行数 = 换行符个数，末行无换行时再 +1；词数 = 按空白切分。
@@ -440,6 +554,8 @@ def main():
                         ok, note = verify_test(lang, d, log)
                     elif kind == "graceful":
                         ok, note = verify_graceful(lang, sc["ports"][lang], d, log)
+                    elif kind == "compute":
+                        ok, note = verify_compute(lang, sc["ports"][lang], d, log)
                     else:
                         ok, note = False, "unknown kind"
                     st = "PASS" if ok else "FAIL"

@@ -13,6 +13,7 @@
 | **Phase 3** 拓展场景 | 3 | 文件 IO / 测试 Mock / RAG Demo（亮点） | ✅ 已完成 |
 | **Phase 4** 生产高频场景 | 3 | 结构化日志 / 配置管理 / HTTP 客户端 | ✅ 已完成 |
 | **Phase 5** 剩余场景 | 3 | 限流 / DB CRUD / 优雅关闭 | ✅ 已完成 |
+| **Phase 6** 边界场景 | 5 | 刻意选"某些语言天生不擅长"的问题，突出**技术选型** | 🚧 进行中（1/5） |
 
 ---
 
@@ -88,6 +89,35 @@
 
 ---
 
+## Phase 6 — 🚧 边界场景（进行中）
+
+前 13 个场景的设计前提是「**五门语言都能做**，差异在范式与心智负担」——这保证了对比公平，
+但回答不了技术选型里最关键的一问：**什么时候某门语言根本不该上场，补救方案又要付出多少代价。**
+
+Phase 6 专门补这一环。每个边界场景都必须写清楚**翻车方的补救方案及其成本** ——
+"补救成本"才是选型依据，"不行"只是起点。**刻意不做语言黑帖。**
+
+| # | 场景 | 谁的主场 | 谁需要补救 | 补救代价 | 状态 |
+|---|------|---------|-----------|---------|------|
+| 13 | **cpu-bound-parallel** | Rust / Go / Java | Python、TS(Node) | Python 须换 `multiprocessing`（进程启动 + pickle 序列化）；Node 须 `worker_threads` + `BigInt`（慢约一个数量级） | ✅ **已完成** |
+| 14 | **data-analysis** | Python(pandas) / Rust(polars) | Java / Go / TS | 没有像样的 DataFrame，聚合与分位数要手写 | ⬜ 待开始 |
+| 15 | **structured-concurrency** | Go / TS | Java | 取消传播语义弱；JDK 21 虚拟线程可以改善（本场景 Java 单独使用 JDK 21） | ⬜ 待开始 |
+| 16 | **large-file-streaming** | Go / Rust | Java | 内存约束下易 OOM，须刻意流式 | ⬜ 待开始 |
+| 17 | **error-handling** | Rust / Go | Python / TS | 无编译期错误类型约束，错误链靠约定 | ⬜ 待开始 |
+
+> 边界场景的**新验收要求**：必须做**契约级断言**（响应内容逐字段与独立 oracle 比对），
+> 不能停留在"端口监听级"。判定强度分层见 [VERIFICATION.md](VERIFICATION.md) §10。
+
+| # | 场景 | 主题 | 对比亮点 | 依赖 | 状态 |
+|---|------|------|---------|------|------|
+| 13 | **cpu-bound-parallel** | CPU 密集并行计算 | GIL / 单线程事件循环 / 无 64 位整数 | 无 | ✅ **已完成** |
+| 14 | **data-analysis** | 数据分析处理（100 万行聚合） | DataFrame 生态差异 | pandas / polars / tablesaw / gonum / danfojs | ⬜ 待开始 |
+| 15 | **structured-concurrency** | 结构化并发 + 取消传播 | context / AbortController / TaskGroup / cancel 语义 | 无 | ⬜ 待开始 |
+| 16 | **large-file-streaming** | 大文件流式处理（1GB + 64MB 内存上限） | 迭代器统一程度、谁会全量读入 | 无 | ⬜ 待开始 |
+| 17 | **error-handling** | 错误处理深水区 | Result vs 异常 vs `if err != nil`、错误链 | 无 | ⬜ 待开始 |
+
+---
+
 ## 不做什么（范围边界）
 
 | ❌ 排除 | 原因 |
@@ -107,6 +137,8 @@
 - [ ] 启动命令可本地直接运行（场景 11 用 SQLite，无需外部数据库）
 - [ ] README.md 对比文档完整填写（对比表 + 选型思考）
 - [ ] 本机跑通 `.wb_verify/verify_all.py <场景号>`，该场景 × 5 语言全绿
+- [ ] **边界场景（Phase 6）额外要求**：验证器必须做**契约级断言**（响应逐字段与独立 oracle 比对），
+      不接受只验到"端口监听"
 - [ ] 至少 wrk 压测通过（HTTP 类场景）
 - [ ] 没有大二进制提交（通过 .gitignore 保证）
 
@@ -127,7 +159,8 @@
 
 后续可选项：
 
-1. **HTTP 类场景补契约级断言** —— 按各场景 README 声明的端点与响应体，对 5 种语言做响应归一化后的一致性比对
-   （当前 10 个 `http` 场景只验到"端口监听"级别，见 VERIFICATION.md §9）。
-2. 补充压测数据（`bench/http-bench.sh`）。
-3. 扩展 docs 专题深度（可参考本轮沉淀的 Python/uvicorn 优雅关闭踩坑，已写入 `docs/cloud-native-practice.md`）。
+1. **给已有 `http` 类场景补契约级断言** —— 做法已在场景 13 上验证（§10）：用独立 oracle 逐字段比对。
+   优先补 `02-concurrent-task`，它已确认存在 Java camelCase 与其余语言 snake_case 的**静默不一致**（VERIFICATION.md §11）。
+2. **继续 Phase 6 剩余 4 个边界场景**（14~17）。
+3. 补充压测数据（`bench/http-bench.sh`）。
+4. 扩展 docs 专题深度（可参考本轮沉淀的 Python/uvicorn 优雅关闭踩坑，已写入 `docs/cloud-native-practice.md`）。

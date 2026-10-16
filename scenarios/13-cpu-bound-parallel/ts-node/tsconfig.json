@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "commonjs",
+    "lib": ["ES2022"],
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    /* worker 线程脚本写成纯 JS（worker.js）：worker_threads 不经过 tsx 的 loader，
+       用 .ts 会导致 dev 模式加载失败。allowJs 让 tsc 把它一并复制到 dist/，
+       这样 `tsx src/main.ts` 与 `node dist/main.js` 两种方式都能找到 worker。
+       注意 allowJs 与 declaration 冲突（TS5053），故本场景不开 declaration。 */
+    "allowJs": true
+  },
+  "include": ["src/**/*"]
+}
