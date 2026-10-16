@@ -47,15 +47,16 @@ Multi-Lang-Backend-Showcase/
 ├── README.md                 # 你正在读的文件
 ├── ROADMAP.md                # 完整迭代计划 + 进度追踪 ⭐
 ├── VERIFICATION.md           # 13 场景 × 5 语言本地验证报告（缺陷清单 + 验证方法）⭐
-├── docker-compose.yml        # 一键拉起全部 demo 服务（阶段2实现）
+├── docker-compose.yml        # 拉起 00-hello-http 的 5 个语言服务（各语言目录已含 Dockerfile）
+├── mise.toml                 # mise 统一 SDK 版本声明（当前只管 Java）
 ├── .gitignore
 │
-├── .wb_verify/               # 验证工具链
+├── .wb_verify/               # 验证工具链（脚本入库，运行结果不入库）
 │   ├── verify_all.py         # 统一验证脚本（13 场景 × 5 语言）
 │   ├── check_graceful.py     # 场景 12 定点复核（在途请求 / 关闭日志 / 端口释放）
 │   ├── clean_probe_files.py  # 清理沙箱遗留的随机名探针文件
-│   ├── all_logs/             # 每个「场景 × 语言」的运行日志
-│   └── runs/                 # 每次运行的结果归档
+│   ├── all_logs/             # 每个「场景 × 语言」的运行日志（由全局 `*.log` 规则忽略）
+│   └── runs/                 # 每次运行的结果归档（已忽略）
 │
 ├── docs/                     # 专题深度文档
 │   ├── philosophy.md         # 五大语言核心设计哲学总对比
@@ -106,14 +107,33 @@ scenarios/XX-scenario-name/
 | 语言 | 推荐版本 | SDK 管理器 |
 |------|---------|-----------|
 | Java | Zulu JDK 17 | mise / sdkman |
-| Go | 1.22+ | mise |
+| Go | 1.22+（`go.mod` 声明为 1.22） | mise |
 | Python | 3.11+ | mise |
-| Rust | stable | rustup |
-| Node.js | 20 LTS | mise / nvm |
+| Rust | stable（edition 2021） | rustup |
+| Node.js | **24**（见下方说明） | mise / nvm |
 
-> 本项目推荐用 [mise](https://mise.jdx.dev/) 统一管理所有语言 SDK 版本。
+> 本项目推荐用 [mise](https://mise.jdx.dev/) 统一管理所有语言 SDK 版本（`mise.toml` 中已声明 Java）。
+
+> ⚠️ **Node 版本务必选 24**：`11-db-crud-pool` 使用的 `better-sqlite3` 是**原生模块**，官方未提供
+> Node v24 的预编译产物，需 `npm rebuild better-sqlite3 --build-from-source` 现场编译。
+> 构建产物与 Node ABI 绑定，**换用 v22 等其它大版本会重新报 `Could not locate the bindings file`**。
 
 ### 运行 00-hello-http
+
+**方式一：容器一键拉起**（无需本地装任何 SDK）
+
+```bash
+docker compose up -d --build
+curl 'localhost:8080/hello?name=world'   # Java
+curl 'localhost:8081/hello?name=world'   # Go
+curl 'localhost:8082/hello?name=world'   # Python
+curl 'localhost:8083/hello?name=world'   # Rust
+curl 'localhost:8084/hello?name=world'   # TS-Node
+```
+
+> 只有 `00-hello-http` 提供了 Dockerfile，其余 12 个场景未做容器化。
+
+**方式二：本地直接运行**
 
 ```bash
 # Java (端口 8080)

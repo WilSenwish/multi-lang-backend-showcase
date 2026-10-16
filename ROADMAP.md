@@ -12,7 +12,7 @@
 | **Phase 2** 核心场景 | 3 | JSON / 并发 / CLI — 最能体现语言差异 | ✅ 已完成 |
 | **Phase 3** 拓展场景 | 3 | 文件 IO / 测试 Mock / RAG Demo（亮点） | ✅ 已完成 |
 | **Phase 4** 生产高频场景 | 3 | 结构化日志 / 配置管理 / HTTP 客户端 | ✅ 已完成 |
-| **Phase 5** 剩余场景 | 2 | 限流 / DB CRUD / 优雅关闭 | ✅ 已完成 |
+| **Phase 5** 剩余场景 | 3 | 限流 / DB CRUD / 优雅关闭 | ✅ 已完成 |
 
 ---
 
@@ -20,10 +20,10 @@
 
 - [x] 仓库目录结构（scenarios/ / docs/ / bench/）
 - [x] 顶层 README（选型矩阵、快速上手、迭代计划）
-- [x] docs/ 5 个专题文档大纲
+- [x] docs/ 7 个专题文档（philosophy / concurrency / error-handle / dependency / checklist / observability / cloud-native-practice）
 - [x] **00-hello-http** — 5 种语言完整实现 + 对比 README
 - [x] bench/http-bench.sh 压测脚本
-- [x] docker-compose.yml 占位
+- [x] docker-compose.yml + 00 场景 5 个语言的 Dockerfile（`docker compose up -d --build` 可一键拉起）
 - [x] .gitignore
 
 ---
@@ -96,7 +96,7 @@
 | 复杂网关 / 服务注册发现 | 组件太多 |
 | JWT / 密码加密 | 偏向密码学工具，语言差异不大 |
 | C / C++ / Ruby / PHP / Scala / Haskell | 重复范式或受众小 |
-| 一次性实现全部 12 个场景 | 容易烂尾 |
+| 一次性实现全部 13 个场景 | 容易烂尾（故拆成 5 个阶段推进） |
 
 ---
 
@@ -104,7 +104,7 @@
 
 每个场景必须满足：
 - [ ] 5 种语言实现全部完成，业务逻辑完全对齐
-- [ ] 启动命令可本地直接运行（除 Phase 5 的 DB 场景）
+- [ ] 启动命令可本地直接运行（场景 11 用 SQLite，无需外部数据库）
 - [ ] README.md 对比文档完整填写（对比表 + 选型思考）
 - [ ] 本机跑通 `.wb_verify/verify_all.py <场景号>`，该场景 × 5 语言全绿
 - [ ] 至少 wrk 压测通过（HTTP 类场景）

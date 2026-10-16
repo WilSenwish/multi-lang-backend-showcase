@@ -16,20 +16,19 @@ go.sum
 *.dll
 *.so
 *.dylib
-# go build 默认在包目录生成同名无扩展名二进制，需逐个忽略（模块名 = 目录名）
-/scenarios/*/go/hello-http
-/scenarios/*/go/json-serialize
-/scenarios/*/go/concurrent-task
-/scenarios/*/go/cli-tool
-/scenarios/*/go/file-io
-/scenarios/*/go/unittest
-/scenarios/*/go/simple-rag-demo
-/scenarios/*/go/structured-logging
-/scenarios/*/go/config-management
-/scenarios/*/go/http-client
-/scenarios/*/go/rate-limit
-/scenarios/*/go/db-crud-pool
-/scenarios/*/go/graceful-shutdown
+# go build 在包目录生成与「模块名」同名的无扩展名二进制 —— 模块名不一定等于场景目录名
+# （如 03-cli-tool 生成的是 count03），因此按逐个模块名写死会漏网。
+# 改为：先屏蔽 scenarios/*/go/ 下的全部产物，再用白名单放行源码与配置文件。
+/scenarios/*/go/*
+!/scenarios/*/go/*.go
+!/scenarios/*/go/*.mod
+!/scenarios/*/go/*.md
+!/scenarios/*/go/Dockerfile*
+!/scenarios/*/go/.dockerignore
+!/scenarios/*/go/*.yaml
+!/scenarios/*/go/*.yml
+!/scenarios/*/go/*.json
+!/scenarios/*/go/*.txt
 
 # Python
 __pycache__/
@@ -49,6 +48,13 @@ node_modules/
 dist/
 .env
 .env.local
+
+# 数据库运行时文件（场景 11 每次运行自动生成，禁止入库）
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
 
 # OS
 .DS_Store

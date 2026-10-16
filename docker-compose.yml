@@ -1,7 +1,16 @@
 # docker-compose.yml
-# 一键拉起 00-hello-http 场景的 5 个语言服务（阶段2实现）
-# 使用方式：docker-compose up -d
-version: '3.8'
+# 一键拉起 00-hello-http 场景的 5 个语言服务（各语言目录下均已提供 Dockerfile）
+#
+# 使用方式：docker compose up -d --build
+# 验证方式（5 个端口返回内容应完全一致）：
+#   curl 'localhost:8080/hello?name=world'   # Java
+#   curl 'localhost:8081/hello?name=world'   # Go
+#   curl 'localhost:8082/hello?name=world'   # Python
+#   curl 'localhost:8083/hello?name=world'   # Rust
+#   curl 'localhost:8084/hello?name=world'   # TS-Node
+#
+# 说明：本文件只覆盖 00-hello-http。其余 12 个场景未做容器化（不在 Roadmap 范围内）。
+# 顶层 version 字段在 Compose v2 已废弃且会产生警告，故不再声明。
 
 services:
   java:

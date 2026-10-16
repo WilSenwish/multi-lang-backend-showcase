@@ -107,17 +107,32 @@ curl http://localhost:8084/hello?name=Trae
 
 > 数据为 Docker 容器内测量的典型值，具体因配置而异。
 
-### QPS 压测对比（wrk，待补充）
+### QPS 压测对比（wrk）
 
-| 语言 | QPS | p99 延迟 |
-|------|-----|---------|
-| Java (SpringBoot) | 待测 | 待测 |
-| Go | 待测 | 待测 |
-| Python (FastAPI) | 待测 | 待测 |
-| Rust (axum) | 待测 | 待测 |
-| TS-Node (fastify) | 待测 | 待测 |
+> 本仓库**不提供预置的压测数值**：QPS 与尾延迟高度依赖机器配置、SDK 版本、JVM/GC 参数与压测并发数，
+> 照抄他人数字没有意义。请按下面命令在本机跑一次，把结果填进下表自用。
 
-> 压测脚本见 [../../../bench/http-bench.sh](../../../bench/http-bench.sh)
+```bash
+brew install wrk                    # macOS；Linux 用发行版包管理器
+
+# 先按上文启动 5 个服务，再一键压测（脚本会依次打 8080-8084）
+bash ../../../bench/http-bench.sh
+
+# 或单独压某一个
+wrk -t4 -c100 -d30s 'http://localhost:8081/hello?name=world'
+```
+
+| 语言 | 端口 | QPS | p99 延迟 |
+|------|------|-----|---------|
+| Java (SpringBoot) | 8080 | 自测填写 | 自测填写 |
+| Go | 8081 | 自测填写 | 自测填写 |
+| Python (FastAPI) | 8082 | 自测填写 | 自测填写 |
+| Rust (axum) | 8083 | 自测填写 | 自测填写 |
+| TS-Node (fastify) | 8084 | 自测填写 | 自测填写 |
+
+**预期趋势**（不作为结论，仅用于校验你的实测结果是否离谱）：Rust / Go 通常显著领先；
+Java（SpringBoot）在预热完成后吞吐接近 Rust/Go，但冷启动与内存占用明显更高；
+Python(FastAPI) 与 TS-Node(fastify) 同处第二梯队，前者受 GIL 与 ASGI 框架开销影响，后者受单线程事件循环影响。
 
 ---
 

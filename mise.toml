@@ -1,2 +1,13 @@
+# mise 统一 SDK 版本声明（https://mise.jdx.dev/）
+#
+# 本文件只固定 Java：Java 版本差异会直接决定 Spring Boot 能否启动
+# （Spring Boot 2.x 在 JDK 17 下会因 Lombok 注解处理器的模块强封装而失败，见 VERIFICATION.md §4.1）。
+#
+# Go / Python / Rust / Node 未在此固定，原因：
+#   - 各场景的 go.mod / requirements.txt / Cargo.toml 已各自声明最低版本，够用；
+#   - Node 更是与 ABI 绑定（场景 11 的 better-sqlite3 需按本机 Node 大版本现场编译），
+#     在仓库里写死版本反而会让换机器的同学直接踩坑。
+# 需要固定时，按 `mise use <tool>@<version>` 追加即可（会写进本文件的 [tools] 段）。
+
 [tools]
 java = "zulu-17"

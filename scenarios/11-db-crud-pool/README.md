@@ -1,17 +1,21 @@
-# 场景 11：MySQL CRUD + 连接池
+# 场景 11：SQLite CRUD + 连接池
 
 ## 业务描述
 
 统一实现简单的 **User 表 CRUD**，带连接池管理：
 
 ### User 表结构
+
+> 五种语言建表结果一致，下表为 SQLite 实际 DDL（Rust / TS 为手写 `CREATE TABLE IF NOT EXISTS`，
+> Java / Go / Python 分别由 Hibernate `ddl-auto`、GORM `AutoMigrate`、`Base.metadata.create_all` 生成等价结构）。
+
 ```sql
-CREATE TABLE users (
-  id BIGINT PRIMARY KEY AUTO_INCREMENT,
-  name VARCHAR(64) NOT NULL,
-  email VARCHAR(128),
-  age INT,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  email TEXT,
+  age INTEGER,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 ```
 
@@ -38,7 +42,13 @@ PUT /users/{id}
 DELETE /users/{id}
 ```
 
-> ⚠️ **需要本地 MySQL 环境**，可以用 Docker 快速拉起：`docker run -e MYSQL_ROOT_PASSWORD=root -p 3306:3306 mysql:8`
+> ✅ **零外部依赖**：本场景全部使用 **SQLite 本地文件**，不需要安装或启动任何数据库服务。
+> 各语言的库文件由首次启动时自动建表生成，且**已被 `.gitignore` 排除，不会入库**：
+> `go/demo.db`、`java/demo.db`、`python/demo_py.db`、`rust/demo_rs.db`、`ts-node/demo_ts.db{,-shm,-wal}`。
+> 想重置数据，直接删掉对应 `.db` 文件重启即可。
+
+> ⚠️ 唯一需要额外准备的：TS-Node 用的 `better-sqlite3` 是**原生模块**，官方未提供 Node v24 的预编译产物，
+> 需先执行 `npm rebuild better-sqlite3 --build-from-source`（详见下方「运行方式 → TS(Node)」）。
 
 所有语言实现**业务逻辑完全一致**。
 
@@ -48,17 +58,19 @@ DELETE /users/{id}
 
 | 语言 | 数据访问层 | 连接池 | 亮点 |
 |------|-----------|--------|------|
-| Java | MyBatis / Spring Data JPA | HikariCP（Spring Boot 默认） | 成熟生态，PageHelper 分页 |
-| Go | `database/sql` + GORM | `database/sql` 内置池 | GORM 链式 API |
-| Python | SQLAlchemy 2.0 async + aio_pymysql | SQLAlchemy async pool | async 支持好 |
-| Rust | **sqlx** | sqlx 内置池 | ⭐ **编译期 SQL 校验**（最大差异化） |
-| TS(Node) | **Prisma** | Prisma 内置池 | 类型安全 ORM，原生 TS 类型 |
+| Java | Spring Data JPA + `sqlite-jdbc` + `hibernate-community-dialects` | HikariCP（Spring Boot 默认） | 零实现代码，方法名即查询 |
+| Go | GORM + `glebarez/sqlite`（纯 Go 驱动） | GORM 底层 `database/sql` 内置池 | GORM 链式 API + `AutoMigrate` |
+| Python | SQLAlchemy 2.0（同步） | `NullPool`（SQLite 单文件无需真连接池） | 表达式构造能力强，async/sync 双支持 |
+| Rust | **sqlx** + `SqlitePoolOptions` | sqlx 内置 `SqlitePool` | ⭐ `FromRow` 编译期类型绑定（最大差异化） |
+| TS(Node) | **better-sqlite3**（手写 SQL） | 不需要（Node 单线程，同步驱动） | 同步 API 最简单，无回调地狱 |
 
 ### 特别关注
-- **Rust sqlx 编译期校验**：SQL 语法、类型、表结构在编译时验证 — 这是 Java 工程师最感兴趣的特性
-- **Java HikariCP**：业界最快连接池
-- **Prisma**：TS 世界的类型安全 ORM 代表
-- **GORM**：Go 生态最流行的 ORM
+- **Rust sqlx 的类型安全**：`FromRow` 把查询结果在**编译期**绑定到结构体，字段类型不匹配直接编译失败 —
+  这是 Java 工程师最感兴趣的特性（JPA 要等运行时才知道 SQL 对不对）
+- **Java HikariCP**：业界最快连接池；但 SQLite 是单文件数据库，本场景连接池更多是"配置演示"而非"性能刚需"
+- **Python 的 `NullPool`**：SQLite 场景下 SQLAlchemy 默认就建议关掉连接池，这是与其余四门语言最不一样的地方
+- **Node 没有连接池**：`better-sqlite3` 是**同步**驱动，Node 单线程下"一个连接"就是最优解，套连接池反而多余
+- **GORM**：Go 生态最流行的 ORM，`AutoMigrate` 一把梭建表
 
 ---
 
@@ -95,7 +107,7 @@ DELETE /users/{id}
 | **Go 微服务** | 🐹 GORM（简单）或 database/sql（精细） | GORM 链式 API 快；database/sql 可控性高 |
 | **Python 数据/AI** | 🐍 SQLAlchemy 2.0 + async | Python 最成熟、功能最全、支持 sync/async |
 | **Rust 高性能** | 🦀 sqlx | **类型安全**是绝杀、SQL 运行时性能碾压 |
-| **Node/BFF 层** | 🟦 Prisma（类型安全 ORM）或 better-sqlite3 | Prisma 生成 TS 类型；better-sqlite3 最轻 |
+| **Node/BFF 层** | 🟦 Prisma（类型安全 ORM）或 better-sqlite3 | Prisma 生成 TS 类型；better-sqlite3 最轻（**本仓库用的是后者**） |
 
 ### 关键选型决策点
 
@@ -104,41 +116,100 @@ DELETE /users/{id}
 | **SQL 能否编译期校验？** | 只有 **Rust sqlx** 能（其他语言运行时才知道 SQL 对不对） |
 | **要类型安全 ORM？** | Prisma（TS）/ sqlx（Rust）/ Spring Data JPA（Java 注解） |
 | **连接池配置？** | 全都支持，参数名略有不同 |
-| **分布式？** | 换 MySQL/PostgreSQL，sqlx/Prism/GORM 都支持切换 |
+| **分布式？** | 换 MySQL/PostgreSQL，sqlx/Prisma/GORM 都支持切换 |
 | **轻量 demo？** | SQLite 零依赖本地文件 ✅ 本次用的方案 |
+
+### 从 SQLite 迁到 MySQL / PostgreSQL 要改什么
+
+本场景选 SQLite 是为了**零外部依赖**（clone 下来就能跑）。真上生产换 MySQL/PostgreSQL 时，五门语言的改动量不同：
+
+| 语言 | 改动点 | 代价 |
+|------|--------|------|
+| Java | 换 JDBC 驱动 + `spring.datasource.*`；Hibernate 方言自动识别 | 小（JPA 屏蔽了差异） |
+| Go | 换驱动包（`gorm.io/driver/mysql`）+ DSN | 小 |
+| Python | 换驱动 + DSN；`NullPool` 要改回 `QueuePool` | 小，但**连接池语义要重新调** |
+| Rust | 换 sqlx feature + DSN；`query_as` 不变 | 小（类型安全仍在） |
+| TS(Node) | `better-sqlite3` 是 SQLite 专用，需整层换成 `mysql2`/`pg` | **大**（同步 API 变异步，业务代码全改） |
+
+> 这也说明：**选型时"数据库无关性"本身就是一项能力**。JPA / GORM / SQLAlchemy / sqlx 都把驱动差异收敛在配置层，
+> 而 Node 选了 `better-sqlite3` 这种"贴着数据库特性设计"的库，换库成本就高得多。
 
 ## 运行方式
 
-<!-- TODO: 实现后补充启动/运行命令 -->
+> 五门语言端口连续分配：**Java 8125 / Go 8126 / Python 8127 / Rust 8128 / TS-Node 8129**。
+> 首次启动会自动建表并生成对应的 `.db` 文件，无需手工初始化。
 
-### Java
+### Java（端口 8125）
+
 ```bash
-# TODO (需要本地 MySQL)
+cd java
+mvn spring-boot:run
+# 或打包后运行：mvn clean package -DskipTests && java -jar target/db-crud-pool-1.0.0.jar
 ```
 
-### Go
+### Go（端口 8126）
+
 ```bash
-# TODO (需要本地 MySQL)
+cd go
+export GOPROXY=https://goproxy.cn,direct GOSUMDB=off   # 国内网络建议设置
+go run .
 ```
 
-### Python
+### Python（端口 8127）
+
 ```bash
-# TODO (需要本地 MySQL)
+cd python
+pip install -r requirements.txt   # fastapi / uvicorn / pydantic / sqlalchemy
+python main.py
 ```
 
-### Rust
+### Rust（端口 8128）
+
 ```bash
-# TODO (需要本地 MySQL，sqlx 编译时需要 DB 连接)
+cd rust
+cargo run --release
 ```
 
-### TS(Node)
+> `Cargo.lock` 被 `.gitignore` 忽略（库项目惯例），首次编译会重新解析依赖版本。
+
+### TS(Node)（端口 8129）
+
 ```bash
-# TODO (需要本地 MySQL)
+cd ts-node
+npm install
+# better-sqlite3 是原生模块，官方无 Node v24 预编译产物，必须源码构建一次：
+npm rebuild better-sqlite3 --build-from-source
+npm run dev        # 或 npm run build && npm start
 ```
+
+> ⚠️ 原生模块与 Node ABI 绑定：上面构建出的产物**只对同 ABI 的 Node 有效**。
+> 换用其它大版本 Node（如 v22）会重新报 `Could not locate the bindings file`，需要重建。
+
+### 统一验证
+
+```bash
+# 健康检查（5 个端口返回结构一致）
+curl localhost:8125/health && curl localhost:8126/health && curl localhost:8127/health \
+  && curl localhost:8128/health && curl localhost:8129/health
+
+# 写入 → 读取（换成任意端口即可横向对比）
+curl -X POST localhost:8126/users -H 'Content-Type: application/json' \
+  -d '{"name":"Alice","email":"a@x.com","age":28}'
+curl localhost:8126/users/1
+curl 'localhost:8126/users?page=0&size=10'
+curl -X PUT localhost:8126/users/1 -H 'Content-Type: application/json' -d '{"name":"Alice 2.0"}'
+curl -X DELETE localhost:8126/users/1
+```
+
+### 统一 API 契约
+
+| 方法 | 路径 | 说明 | 成功响应 |
+|------|------|------|---------|
+| `POST` | `/users` | 创建 | `201` + 完整 User |
+| `GET` | `/users/{id}` | 查询单个 | `200` + 完整 User |
+| `GET` | `/users?page=0&size=10` | 分页列表 | `200` + `{items, total, page, size}` |
+| `PUT` | `/users/{id}` | 更新（全量） | `200` + 更新后 User |
+| `DELETE` | `/users/{id}` | 删除 | `204` 无 body |
+| `GET` | `/health` | 健康检查 | `200` + `{service, db}` |
 
 ---
-
-## 选型思考
-
-<!-- TODO: 实现后补充选型建议 -->
-
