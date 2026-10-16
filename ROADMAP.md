@@ -13,7 +13,7 @@
 | **Phase 3** 拓展场景 | 3 | 文件 IO / 测试 Mock / RAG Demo（亮点） | ✅ 已完成 |
 | **Phase 4** 生产高频场景 | 3 | 结构化日志 / 配置管理 / HTTP 客户端 | ✅ 已完成 |
 | **Phase 5** 剩余场景 | 3 | 限流 / DB CRUD / 优雅关闭 | ✅ 已完成 |
-| **Phase 6** 边界场景 | 5 | 刻意选"某些语言天生不擅长"的问题，突出**技术选型** | 🚧 进行中（2/5） |
+| **Phase 6** 边界场景 | 5 | 刻意选"某些语言天生不擅长"的问题，突出**技术选型** | 🚧 进行中（3/5） |
 
 ---
 
@@ -101,7 +101,7 @@ Phase 6 专门补这一环。每个边界场景都必须写清楚**翻车方的�
 |---|------|---------|-----------|---------|------|
 | 13 | **cpu-bound-parallel** | Rust / Go / Java | Python、TS(Node) | Python 须换 `multiprocessing`（进程启动 + pickle 序列化）；Node 须 `worker_threads` + `BigInt`（慢约一个数量级） | ✅ **已完成** |
 | 14 | **data-analysis** | Python(pandas) / Rust(polars) | Java / Go / TS | 没有像样的 DataFrame，聚合与分位数要手写；TS 的 danfojs 已停更三年 | ✅ **已完成** |
-| 15 | **structured-concurrency** | Go / TS | Java | 取消传播语义弱；JDK 21 虚拟线程可以改善（本场景 Java 单独使用 JDK 21） | ⬜ 待开始 |
+| 15 | **structured-concurrency** | Go / TS / Python | Java / Rust | Java 的 `StructuredTaskScope` 只保证作用域收尾、**不传播取消**（须手写标志 + 轮询）；Rust 无语言级结构化并发，取消要自己搭 | ✅ **已完成** |
 | 16 | **large-file-streaming** | Go / Rust | Java | 内存约束下易 OOM，须刻意流式 | ⬜ 待开始 |
 | 17 | **error-handling** | Rust / Go | Python / TS | 无编译期错误类型约束，错误链靠约定 | ⬜ 待开始 |
 
@@ -112,7 +112,7 @@ Phase 6 专门补这一环。每个边界场景都必须写清楚**翻车方的�
 |---|------|------|---------|------|------|
 | 13 | **cpu-bound-parallel** | CPU 密集并行计算 | GIL / 单线程事件循环 / 无 64 位整数 | 无 | ✅ **已完成** |
 | 14 | **data-analysis** | 数据分析处理（20 万行分组聚合，可调至 200 万） | DataFrame 生态差异 | pandas / polars / tablesaw / gonum / danfojs | ✅ **已完成** |
-| 15 | **structured-concurrency** | 结构化并发 + 取消传播 | context / AbortController / TaskGroup / cancel 语义 | 无 | ⬜ 待开始 |
+| 15 | **structured-concurrency** | 结构化并发 + 取消传播 | context / AbortController / TaskGroup / cancel 语义 | Java 侧需 JDK 21（preview API） | ✅ **已完成** |
 | 16 | **large-file-streaming** | 大文件流式处理（1GB + 64MB 内存上限） | 迭代器统一程度、谁会全量读入 | 无 | ⬜ 待开始 |
 | 17 | **error-handling** | 错误处理深水区 | Result vs 异常 vs `if err != nil`、错误链 | 无 | ⬜ 待开始 |
 

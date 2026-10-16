@@ -1,9 +1,9 @@
 # 本地验证报告（VERIFICATION）
 
-> 多语言后端对比仓库 `Multi-Lang-Backend-Showcase` —— **13 个基础场景 ＋ 2 个边界场景 × 5 种语言**
-> （Java / Go / Python / Rust / TS-Node = **75 个验证单元**）的逐场景本地运行验证、缺陷修复与验证方法沉淀。
+> 多语言后端对比仓库 `Multi-Lang-Backend-Showcase` —— **13 个基础场景 ＋ 3 个边界场景 × 5 种语言**
+> （Java / Go / Python / Rust / TS-Node = **80 个验证单元**）的逐场景本地运行验证、缺陷修复与验证方法沉淀。
 >
-> 最后更新：2026-10-16（新增场景 14「数据分析处理」，契约级断言扩展到第 2 个场景，见 §10）
+> 最后更新：2026-10-16（新增场景 15「结构化并发 + 取消传播」，取消语义首次进入断言，见 §10）
 > ｜ 验证脚本：`.wb_verify/verify_all.py`
 > ｜ 结果：`.wb_verify/all_results.json` / `.md` ｜ 历史归档：`.wb_verify/runs/`
 
@@ -13,8 +13,8 @@
 
 | 指标 | 数值 |
 |------|------|
-| 验证单元（场景 × 语言） | **75**（基础场景 13×5=65 ＋ 边界场景 2×5=10） |
-| ✅ 判定为 PASS | **75**（含场景 14 的 Rust，已在本机编译并实测通过） |
+| 验证单元（场景 × 语言） | **80**（基础场景 13×5=65 ＋ 边界场景 3×5=15） |
+| ✅ 判定为 PASS | **80**（含场景 14 的 Rust 与场景 15 的 Java/JDK 21，均已在本机编译并实测通过） |
 | ❌ 代码缺陷导致的 FAIL | **0** |
 | ⚠️ 环境限制导致验证器内 PREP_FAIL | **2**（场景 13 的 Python / Rust，已用等价方式单独验证通过，见 §10） |
 
@@ -22,7 +22,7 @@
 > （`pip` 找不到可用临时目录、`cargo` 无法替换已有构建产物），根因是本运行环境的
 > Security Center 拦截**文件删除**类操作 —— 不是代码缺陷。这两个语言的实现已用
 > 「跳过 prep、直接起服务发请求」的方式单独验证，checksum 同样与 oracle 逐位相符（§10）。
-> 在常规终端执行 `python3 .wb_verify/verify_all.py` 即可复现 75/75 全绿。
+> 在常规终端执行 `python3 .wb_verify/verify_all.py` 即可复现 80/80 全绿。
 
 共识别并修复 **39 条代码/文档缺陷**：首轮 34 条（编译期/启动期硬错误为主，见 §4），
 本轮复核新增 **5 条**（都是"能跑起来但行为不对"的静默缺陷，见 §5）。
@@ -35,7 +35,7 @@
 
 ---
 
-## 2. 完整结果矩阵（15 × 5）
+## 2. 完整结果矩阵（16 × 5）
 
 | # | 场景 | 类型 | 判定方式 | Java | Go | Python | Rust | TS-Node |
 |---|------|------|---------|------|----|--------|------|---------|
@@ -54,13 +54,15 @@
 | 12 | graceful-shutdown | graceful | 在途请求 + 关闭日志 | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 13 | cpu-bound-parallel | compute | **契约级**（checksum 对比 oracle） | ✅ | ✅ | ✅\* | ✅\* | ✅ |
 | 14 | data-analysis | data | **契约级**（分组统计 + Top10 对比 oracle） | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 15 | structured-concurrency | cancel | **契约级**（取消传播三用例 + 延迟查活跃任务） | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 \* 场景 13 的 Python / Rust 在验证器内因环境限制停在 prep（见 §1 说明），
 已用等价方式单独验证通过（§10）。场景 14 的 Rust 已在本机完成编译，
 `python3 .wb_verify/verify_all.py 14` 实测 **5/5 全绿**（服务端耗时 76~278ms）。
+场景 15 是唯一需要按场景切换 JDK 的（Java 用 JDK 21，见 §10）。
 
-**分语言统计**：Java 15/15 ｜ Go 15/15 ｜ Python 15/15 ｜ Rust 15/15 ｜ TS-Node 15/15。
-基础场景 13×5 = 65/65 全绿；边界场景 13、14 各 5/5 全绿。
+**分语言统计**：Java 16/16 ｜ Go 16/16 ｜ Python 16/16 ｜ Rust 16/16 ｜ TS-Node 16/16。
+基础场景 13×5 = 65/65 全绿；边界场景 13、14、15 各 5/5 全绿。
 
 > `11-db-crud-pool` 的 TS-Node 曾因原生模块 `better-sqlite3` 缺少 Node 24 预编译产物而无法运行；
 > 已在本机完成源码构建（§6.1），现在 65/65 全绿。
@@ -484,6 +486,55 @@ cd scenarios/13-cpu-bound-parallel/rust && ./target/debug/cpu-bound-parallel
 顺带实证：**danfojs-node 1.2.0 在 Node 24 上可安装、可运行**，`groupby().col().sum()` 的整数
 求和无精度损失——但其依赖链含 `cdn.sheetjs.com` 的 tarball 直连（国内安装 10+ 分钟）与
 `@tensorflow/tfjs-node@3.x` 原生绑定（Node 新版本无官方支持），选型结论"已停更、谨慎"已写入场景 README。
+
+### 场景 15（结构化并发 + 取消传播）：把"取消"变成可断言的字段
+
+场景 15 把"取消传播"这条**看不见的语义**拆成五个可断言字段：
+`outcome / completed / cancelled / failed / leaked`，外加 `elapsed_ms` 的上下界。
+三个用例（全成功 / fail-fast / 父作用域超时）逐字段比对，最后再做一次**延迟检查**：
+三个用例跑完后再等 3 秒查 `/stats`，`active_tasks` 必须为 0。
+
+**为什么时间断言是必需的**：取消没传播时，`outcome` 照样可以是 `failed` ——
+只有 `completed` 里多出 id、`elapsed_ms` 变成"跑满 task_ms"的量级才会暴露。
+也就是说，**"返回了正确的失败原因"和"兄弟任务真的停了"是两件事**，前者不能替代后者。
+
+2026-10-16 本机实测（`task_ms=2000`）：五门语言 **5/5 全绿**，三个用例的服务端耗时
+分别在 **201~204ms / 250~252ms / 300~302ms** —— 与 `fail_after_ms=250`、`timeout_ms=300`
+几乎重合，说明取消都在信号发出点附近生效，没有一门语言等到任务跑满。
+
+### Java 侧对照实验：StructuredTaskScope 的取消是"中断"而非"传播"
+
+实现时的初始判断是"JDK 21 的 `StructuredTaskScope` 不传播取消，必须手写标志"，
+于是写了 `AtomicBoolean` + 轮询。为验证这个判断做了一组对照实验
+（把子任务改成不检查标志、直接 `Thread.sleep(task_ms)`）：
+
+```
+tasks=8, task_ms=2000, fail_index=3, fail_after_ms=250
+→ {"outcome":"failed","completed":[],"cancelled":[0,1,2,4,5,6,7],"failed":3,
+   "elapsed_ms":260,"leaked":0}
+```
+
+**去掉手写标志后行为完全不变** —— 说明兄弟任务不是"看到取消信号"才退出的，
+而是被 `StructuredTaskScope` 收尾时的 **`Thread.interrupt()`** 打断的（JDK 21 的实际行为）。
+实验脚本：`/tmp/probe_java15_nocancel.py`（复制到 `/tmp` 改两行再跑，不污染仓库）。
+
+代价因此换了形式，共三条，已写入场景 README：
+
+1. 取消**不携带原因**（没有 `ctx.Err()` / `signal.reason` 之类的检查点）；
+2. 中断**只对可中断的阻塞点生效**（不可中断的忙循环/部分阻塞 IO 会静默失效）——
+   故实现里保留了标志兜底，并把 `InterruptedException` 统一归一化成 `cancelled`；
+3. `StructuredTaskScope` 到 JDK 21 仍是 **preview**（编译与运行都要 `--enable-preview`，
+   API 在 JEP 453 / 480 / 487 中三度变更）。
+
+### 场景 15 带来的两个环境坑
+
+1. **按场景切换 JDK**：只有这一个场景的 Java 需要 JDK 21。验证器新增 `env_for(name, lang)`，
+   只对 `15-structured-concurrency` + `java` 覆盖 `JAVA_HOME`（指向 mise 的 `zulu-21`），
+   其余场景仍用 JDK 17；场景目录内另放 `.mise.toml` 做目录级覆盖，方便手工运行。
+2. **`SERVER__PORT` 会顶掉 `server.port`**：运行环境注入的 `SERVER__PORT=49817` 被 Spring Boot
+   宽松绑定后覆盖了 `application.properties`（验证器已在 `ENV` 里清掉，但手工跑 mvn 时会遇到）。
+   另：`pom.xml` 的 XML 注释里出现连续两个连字符（如写 `--enable-preview`）会让 Maven 直接报
+   `Non-parseable POM` —— 这类注释要改写。
 
 ---
 

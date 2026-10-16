@@ -26,6 +26,8 @@ RES_MD = os.path.join(HERE, "all_results.md")
 # 归档目录：每次运行（含过滤运行）都留一份快照，避免全量结果被单场景复跑覆盖
 RUNDIR = os.path.join(HERE, "runs")
 JAVA17 = "/opt/homebrew/opt/openjdk@17"
+# 场景 15 的 Java 用 JDK 21（StructuredTaskScope 是 JDK 21 的 preview API）
+JAVA21 = os.path.expanduser("~/.local/share/mise/installs/java/zulu-21")
 MISE_SHIMS = os.path.expanduser("~/.local/share/mise/shims")
 CARGO_BIN = os.path.expanduser("~/.cargo/bin")
 os.makedirs(LOGDIR, exist_ok=True)
@@ -49,6 +51,20 @@ for _k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
            "SERVER__PORT", "SERVER_PORT", "SERVER__HOST", "SERVER_HOST", "PORT"):
     ENV.pop(_k, None)
 
+
+def env_for(name, lang):
+    """按场景返回子进程环境（默认全局 ENV）。
+
+    只有场景 15 的 Java 需要特例：它用 JDK 21 的 preview API（StructuredTaskScope），
+    用顶层 mise.toml 固定的 JDK 17 编译会直接失败。
+    """
+    if name == "15-structured-concurrency" and lang == "java":
+        e = dict(ENV)
+        e["JAVA_HOME"] = JAVA21
+        e["PATH"] = JAVA21 + "/bin:" + e.get("PATH", "")
+        return e
+    return ENV
+
 LANGS = ["java", "go", "python", "rust", "ts-node"]
 # 完整端口表(5 种语言)；03=cli, 05=test, 12=graceful
 SCENARIOS = [
@@ -68,6 +84,7 @@ SCENARIOS = [
     # 13+ 为"边界场景"：CPU 密集 / 数据分析 / 结构化并发 / 大文件流式 / 错误处理
     {"name":"13-cpu-bound-parallel","kind":"compute","ports":{"java":8135,"go":8136,"python":8137,"rust":8138,"ts-node":8139}},
     {"name":"14-data-analysis","kind":"data","ports":{"java":8140,"go":8141,"python":8142,"rust":8143,"ts-node":8144}},
+    {"name":"15-structured-concurrency","kind":"cancel","ports":{"java":8145,"go":8146,"python":8147,"rust":8148,"ts-node":8149}},
 ]
 
 PREP_TIMEOUT = {"java":600, "go":1200, "python":600, "rust":1200, "ts-node":600}
@@ -553,6 +570,128 @@ def verify_data(lang, port, d, log):
         time.sleep(1)
 
 
+# ---- 场景 15：结构化并发 + 取消传播 ----
+# 三个用例覆盖"取消传播"的三条语义：
+#   1) 全成功     —— 作用域正常收尾，所有子任务 completed
+#   2) fail-fast  —— 一个子任务失败，兄弟任务必须被取消（elapsed 远小于 task_ms）
+#   3) 父超时     —— deadline 到期，全部子任务取消
+# 最后是**延迟检查**：请求返回后再等一段时间（> task_ms 的量级），GET /stats 的
+# active_tasks 必须为 0 —— 这条能抓出"只是标记取消、任务其实还在后台跑完"的假实现。
+# 为什么必须这么做：五门语言都能让服务起来、都能返回 200；
+# 只有"取消是否真的传播 + 作用域是否真的收尾"是本场景的业务语义。
+CANCEL_CASES = [
+    {
+        "name": "全成功",
+        "spec": {"tasks": 4, "task_ms": 200, "fail_index": -1, "fail_after_ms": 0, "timeout_ms": 0},
+        "want": {"outcome": "completed", "completed": [0, 1, 2, 3], "cancelled": [], "failed": -1},
+        "min_elapsed_ms": 150,
+    },
+    {
+        "name": "fail-fast 取消传播",
+        "spec": {"tasks": 8, "task_ms": 2000, "fail_index": 3, "fail_after_ms": 250, "timeout_ms": 0},
+        "want": {"outcome": "failed", "completed": [], "cancelled": [0, 1, 2, 4, 5, 6, 7], "failed": 3},
+        "max_elapsed_ms": 1500,
+    },
+    {
+        "name": "父作用域超时",
+        "spec": {"tasks": 6, "task_ms": 2000, "fail_index": -1, "fail_after_ms": 0, "timeout_ms": 300},
+        "want": {"outcome": "timeout", "completed": [], "cancelled": [0, 1, 2, 3, 4, 5], "failed": -1},
+        "max_elapsed_ms": 1500,
+    },
+]
+# 子任务"本该跑完"的时间量级：请求返回后仍不许有存活子任务
+CANCEL_SETTLE_SLEEP = 3.0
+
+
+def http_json_get(port, path, timeout=30):
+    """GET JSON，返回 (status, parsed)。同样用 http.client 避免代理劫持。"""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    try:
+        conn.request("GET", path)
+        resp = conn.getresponse()
+        raw = resp.read().decode("utf-8", "replace")
+        try:
+            return resp.status, json.loads(raw)
+        except Exception:
+            return resp.status, {"_raw": raw[:400]}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def verify_cancel(lang, port, d, log, env):
+    """场景 15 契约级断言：取消传播 + 作用域收尾。
+
+    注意 outcome/completed/cancelled/failed 是"语义字段"，必须逐项比对：
+    若某门语言的取消没传播（兄弟任务照常跑满），outcome 仍可能是 failed，
+    但 completed 会非空、elapsed 会接近 task_ms —— 时间断言就是用来抓这个的。
+    """
+    free_port(port)
+    with open(log, "a") as lf:
+        proc = subprocess.Popen(start_cmd(lang, port, "cancel", d), cwd=d, env=env,
+                                stdout=lf, stderr=subprocess.STDOUT, start_new_session=True)
+    try:
+        if not poll_listen(port, RUN_POLL):
+            return False, "no response on %d" % port + "\n" + tail(log)
+
+        notes = []
+        for case in CANCEL_CASES:
+            spec, want = case["spec"], case["want"]
+            try:
+                status, body = http_json_post(port, "/fanout", spec, timeout=120)
+            except Exception as e:
+                return False, "[%s] 请求 /fanout 失败: %r\n%s" % (case["name"], e, tail(log))
+            if status != 200:
+                return False, "[%s] HTTP %s（期望 200）: %s" % (case["name"], status, str(body)[:300])
+
+            for f in ("tasks", "task_ms", "fail_index", "timeout_ms"):
+                if body.get(f) != spec[f]:
+                    return False, "[%s] %s 回显不符: %r（期望 %r）" % (case["name"], f, body.get(f), spec[f])
+            for f in ("outcome", "completed", "cancelled", "failed"):
+                if body.get(f) != want[f]:
+                    return False, "[%s] %s=%r 与契约不符（期望 %r）" % (
+                        case["name"], f, body.get(f), want[f])
+            if body.get("leaked") != 0:
+                return False, "[%s] leaked=%r（结构化保证：作用域退出时不应有存活子任务）" % (
+                    case["name"], body.get("leaked"))
+
+            ems = body.get("elapsed_ms")
+            if not isinstance(ems, (int, float)):
+                return False, "[%s] elapsed_ms 字段缺失或非法: %r" % (case["name"], ems)
+            if "max_elapsed_ms" in case and ems > case["max_elapsed_ms"]:
+                return False, ("[%s] elapsed_ms=%s 超过上限 %s —— 取消未真正传播"
+                               "（兄弟任务仍在跑满 task_ms=%s）"
+                               % (case["name"], ems, case["max_elapsed_ms"], spec["task_ms"]))
+            if "min_elapsed_ms" in case and ems < case["min_elapsed_ms"]:
+                return False, "[%s] elapsed_ms=%s 低于下限 %s —— 子任务疑似没真正等待" % (
+                    case["name"], ems, case["min_elapsed_ms"])
+            notes.append("%s outcome=%s %sms" % (case["name"], body.get("outcome"), ems))
+
+        # 延迟检查：取消"真的生效"还是"只是标记" —— 看有没有僵尸子任务
+        time.sleep(CANCEL_SETTLE_SLEEP)
+        try:
+            status, st = http_json_get(port, "/stats", timeout=30)
+        except Exception as e:
+            return False, "GET /stats 失败: %r" % (e,)
+        if status != 200:
+            return False, "GET /stats HTTP %s（期望 200）" % status
+        if st.get("active_tasks") != 0:
+            return False, ("请求返回 %.1fs 后 active_tasks=%r —— 子任务并未真正结束（取消只是标记）"
+                           % (CANCEL_SETTLE_SLEEP, st.get("active_tasks")))
+
+        return True, ("取消传播契约一致：%s；返回 %.1fs 后 active_tasks=0（子任务确已终止），"
+                      "累计 started=%s / completed=%s / cancelled=%s"
+                      % (" ｜ ".join(notes), CANCEL_SETTLE_SLEEP,
+                         st.get("started"), st.get("completed"), st.get("cancelled")))
+    finally:
+        kill_tree(proc)
+        subprocess.run(["pkill", "-9", "-f", os.path.join("scenarios", os.path.basename(os.path.dirname(d)))],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(1)
+
+
 def expected_cli_counts(path):
     """基准统计口径（与 Scala/Python/Rust/Java/Go 一致的"逻辑行数"）：
     行数 = 换行符个数，末行无换行时再 +1；词数 = 按空白切分。
@@ -692,6 +831,8 @@ def main():
                         ok, note = verify_compute(lang, sc["ports"][lang], d, log)
                     elif kind == "data":
                         ok, note = verify_data(lang, sc["ports"][lang], d, log)
+                    elif kind == "cancel":
+                        ok, note = verify_cancel(lang, sc["ports"][lang], d, log, env_for(name, lang))
                     else:
                         ok, note = False, "unknown kind"
                     st = "PASS" if ok else "FAIL"

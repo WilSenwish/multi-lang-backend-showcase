@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.2.12</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.showcase</groupId>
+    <artifactId>structured-concurrency</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+    <name>structured-concurrency</name>
+    <description>Multi-Lang-Backend-Showcase: Java 结构化并发与取消传播（JDK 21 StructuredTaskScope preview）</description>
+
+    <properties>
+        <!-- 本场景是全仓库唯一使用 JDK 21 的实现：
+             java.util.concurrent.StructuredTaskScope 在 JDK 21 仍是 preview API（JEP 453），
+             编译与运行都必须开启 enable-preview 开关（见下方两个插件配置）。其余场景仍用 JDK 17。 -->
+        <java.version>21</java.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <release>21</release>
+                    <compilerArgs>
+                        <arg>--enable-preview</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <!-- spring-boot:run 会 fork 一个 JVM，preview API 需要运行时同样开启 -->
+                    <jvmArguments>--enable-preview</jvmArguments>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

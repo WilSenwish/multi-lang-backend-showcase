@@ -1,0 +1,4 @@
+# 本场景的 Java 需要 JDK 21（StructuredTaskScope 是 JDK 21 的 preview API，见 pom.xml 注释）。
+# 顶层 mise.toml 固定的是 zulu-17，这里做目录级覆盖：进入本目录时 mise 自动切到 21。
+[tools]
+java = "zulu-21"
