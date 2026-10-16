@@ -21,24 +21,32 @@ const fastify = Fastify({
   logger: true,
 });
 
+// zod 用于运行时校验（fastify 的 schema 字段需为 JSON Schema，不能传 zod.parse 函数）
+const nameSchema = z.string().trim().max(64);
+
 // GET /hello
 fastify.get<{ Querystring: { name?: string } }>(
   '/hello',
   {
     schema: {
-      querystring: z.object({
-        name: z.string().optional(),
-      }).parse,
+      querystring: {
+        type: 'object',
+        properties: { name: { type: 'string' } },
+        additionalProperties: true,
+      },
       response: {
-        200: z.object({
-          msg: z.string(),
-        }).parse,
+        200: {
+          type: 'object',
+          properties: { msg: { type: 'string' } },
+          required: ['msg'],
+        },
       },
     },
   },
   async (request, reply): Promise<HelloResponse> => {
-    const name = request.query.name?.trim() || DEFAULT_NAME;
-    return { msg: `hello ${name}` };
+    const raw = request.query.name;
+    const name = raw ? nameSchema.parse(raw) : DEFAULT_NAME;
+    return { msg: `hello ${name || DEFAULT_NAME}` };
   },
 );
 

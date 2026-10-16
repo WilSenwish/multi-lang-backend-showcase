@@ -1,0 +1,13 @@
+server:
+  port: 8111
+  host: "0.0.0.0"
+
+database:
+  url: "localhost:3306"
+  user: "admin"
+  password: "secret"
+  pool_size: 10
+
+logging:
+  level: "INFO"
+  json: true

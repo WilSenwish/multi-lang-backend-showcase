@@ -11,7 +11,12 @@
 1. 停止接收新请求
 2. 等待正在处理的请求完成（超时保护）
 3. 关闭连接池、文件句柄等资源
-4. 正常退出（`exit 0`）
+4. 结束进程
+
+> ⚠️ 注意第 4 点：**不要用「退出码是否为 0」判断优雅关闭是否成功**。
+> 进程是被信号"叫醒"的，许多运行时在关闭收尾后会把信号的默认处置恢复回去，
+> 于是进程最终以 `-15`（SIGTERM）/ `143`（128+15）结束 —— 这是正常现象。
+> 可靠判据是**日志里的关闭阶段标记**（例如 `Shutdown complete`），本仓库的验证脚本即按此判定。
 
 ### 各语言实现差异
 
@@ -19,13 +24,43 @@
 |------|---------|---------|---------|
 | Java | `Signal` / Spring `SmartLifecycle` | `CountDownLatch` + 线程池 `shutdown()` | Spring 自动管理 Bean 生命周期 |
 | Go | `os.Signal` channel | `http.Server.Shutdown(ctx)` + WaitGroup | defer + Close() |
-| Python | `signal` 模块 + asyncio | `asyncio.run_until_complete()` 清理 | try-finally + atexit |
+| Python | `loop.add_signal_handler` + `uvicorn.Server.handle_exit` | lifespan 关闭阶段 + `asyncio.wait_for` 超时保护 | lifespan 的 `yield` 之后（**别指望 atexit**，见下方坑 3） |
 | Rust | `tokio::signal` + `ctrlc` | `axum::serve().graceful_shutdown()` | Drop trait 自动清理 |
 | TS(Node) | `process.on('SIGTERM')` | `server.close()` + 定时器超时 | fastify `.close()` |
 
 ### Java 开发者常见坑
 - Spring Boot 默认不处理 SIGTERM，需要配置
 - Tomcat 线程池关闭超时默认 30s，K8s terminationGracePeriodSeconds 要匹配
+
+### Python 优雅关闭的三个坑（实测）
+
+这三个坑都会让"看起来很优雅"的关闭实际跑不通，或者让验证结论失真：
+
+1. **信号回调收到的 `signum` 是 `int`，不是 `signal.Signals`**。
+   写 `sig.name` 会抛 `AttributeError: 'int' object has no attribute 'name'`；
+   要用 `signal.Signals(signum).name` 才能拿到 `'SIGTERM'` 这样的名字。
+
+2. **只 `asyncio.Event.set()` 不会让服务停下来**。
+   信号处理器里 set 一个事件只是"通知"，进程仍会继续 accept 新连接；
+   必须同时驱动框架的关闭流程（uvicorn：`SERVER.handle_exit(signum, frame)`，
+   其内部即置 `should_exit = True`；重复信号则强退），否则只能等外部 SIGKILL —— 优雅关闭是假的。
+
+3. **进程最终"被信号终止"，`atexit` 与未 flush 的 stdout 都会丢**。
+   实测 uvicorn 在完成 graceful shutdown 后进程以 `-15` / `1` 结束，
+   Python 解释器的正常收尾（`atexit`、缓冲区 flush）**不执行**：
+
+   ```
+   $ kill -TERM <pid>          # 进程 returncode = -15，atexit 从未触发
+   # 如果 stdout 重定向到文件（块缓冲），应用自己 print 的日志会整块消失
+   ```
+
+   两个应对方式（本仓库同时用了）：
+   - 应用侧开行缓冲：`sys.stdout.reconfigure(line_buffering=True)`（`main.py` 顶部）
+   - 验证/运行侧：`python3 -u` 或 `PYTHONUNBUFFERED=1`
+
+   > 这一条也解释了为什么 Java 场景在 `mvn spring-boot:run` 下会打印
+   > `[ERROR] Process terminated with exit code: 143` —— 那是 Maven 包装进程看到
+   > 子进程被 SIGTERM 结束后的正常抱怨，不是优雅关闭失败。
 
 ---
 

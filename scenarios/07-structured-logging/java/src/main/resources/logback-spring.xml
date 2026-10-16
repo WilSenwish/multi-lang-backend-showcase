@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Logback 结构化日志配置：JSON 格式 → stdout（云原生最佳实践） -->
+<configuration>
+
+    <!-- SpringBoot 日志级别控制 -->
+    <logger name="org.springframework" level="WARN"/>
+
+    <!-- Appender：stdout 直接输出 JSON（容器友好） -->
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <!-- 时间戳 ISO-8601 -->
+            <timestampPattern>yyyy-MM-dd'T'HH:mm:ss.SSS'Z'</timestampPattern>
+            <!-- 自定义 JSON 字段顺序 -->
+            <customFields>{"app":"structured-logging-java"}</customFields>
+            <!-- 错误栈完整输出到 JSON 的 stack_trace 字段 -->
+            <includeCallerData>true</includeCallerData>
+        </encoder>
+    </appender>
+
+    <!-- 文件 Appender（可选：按大小滚动） -->
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>logs/app.log</file>
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <timestampPattern>yyyy-MM-dd'T'HH:mm:ss.SSS'Z'</timestampPattern>
+        </encoder>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>logs/app.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+            <maxFileSize>10MB</maxFileSize>
+            <maxHistory>7</maxHistory>
+            <totalSizeCap>1GB</totalSizeCap>
+        </rollingPolicy>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="STDOUT"/>
+        <!-- <appender-ref ref="FILE"/> -->
+    </root>
+
+</configuration>

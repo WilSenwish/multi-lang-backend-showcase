@@ -1,0 +1,21 @@
+{
+  "name": "count",
+  "version": "1.0.0",
+  "description": "Multi-Lang-Backend-Showcase: TypeScript wc 命令行工具",
+  "bin": {
+    "count": "dist/main.js"
+  },
+  "scripts": {
+    "dev": "tsx src/main.ts",
+    "build": "tsc",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "commander": "^12.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "tsx": "^4.15.0",
+    "typescript": "^5.4.5"
+  }
+}

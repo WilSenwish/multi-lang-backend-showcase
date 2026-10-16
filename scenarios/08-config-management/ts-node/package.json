@@ -1,0 +1,21 @@
+{
+  "name": "config-management",
+  "version": "1.0.0",
+  "description": "Multi-Lang-Backend-Showcase: TS Node 多环境配置 (zod + @fastify/env)",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "fastify": "^4.28.1",
+    "@fastify/env": "^4.4.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "tsx": "^4.15.0",
+    "typescript": "^5.4.5"
+  }
+}

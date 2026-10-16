@@ -1,0 +1,17 @@
+{
+  "name": "unit-test",
+  "version": "1.0.0",
+  "description": "Multi-Lang-Backend-Showcase: TS Node 单元测试 & Mock",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "coverage": "vitest run --coverage"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/sinon": "^17.0.3",
+    "sinon": "^18.0.0",
+    "typescript": "^5.4.5",
+    "vitest": "^2.1.1"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "db-crud-pool",
+  "version": "1.0.0",
+  "description": "Multi-Lang-Backend-Showcase: TS Node DB CRUD (SQLite)",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "fastify": "^4.28.1",
+    "better-sqlite3": "^11.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/better-sqlite3": "^7.6.11",
+    "tsx": "^4.15.0",
+    "typescript": "^5.4.5"
+  }
+}

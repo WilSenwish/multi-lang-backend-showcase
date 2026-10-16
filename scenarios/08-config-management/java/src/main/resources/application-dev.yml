@@ -1,0 +1,10 @@
+# dev 环境覆盖
+myapp:
+  server:
+    port: 8110
+  database:
+    url: "dev-db:3306"
+    user: "dev-user"
+    pool-size: 5
+  logging:
+    level: "DEBUG"

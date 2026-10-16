@@ -1,0 +1,10 @@
+server:
+  port: 8111
+  host: "0.0.0.0"
+
+database:
+  url: "prod-db-cluster:3306"
+  pool_size: 20
+
+logging:
+  level: "INFO"

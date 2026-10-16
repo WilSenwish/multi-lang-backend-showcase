@@ -41,49 +41,130 @@
 
 | 维度 | Java | Go | Python | Rust | TS(Node) |
 |------|------|----|--------|------|----------|
-| **日志库** | | | | | |
-| **JSON 输出** | | | | | |
-| **零分配** | | | | | |
-| **异步写入** | | | | | |
-| **错误栈** | | | | | |
-| **滚动切割** | | | | | |
-| **优势** | | | | | |
-| **痛点 & 坑** | | | | | |
+| **端口** | 8105 | 8106 | 8107 | 8108 | 8109 |
+| **日志 API / 实现** | SLF4J + Logback | zap (uber-go/zap) | structlog | tracing + tracing-subscriber | pino |
+| **JSON 输出** | logstash-logback-encoder | zap 内置 JSON encoder | structlog JSONRenderer | tracing-subscriber .json() | pino 内置 JSON |
+| **零分配** | ❌ Logback 有开销 | ✅ zap 零分配 | ❌ Python 循环天生有开销 | ✅ tracing 编译期宏 | ✅ pino 异步零分配 |
+| **异步写入** | ❌ Logback 同步（AsyncAppender 可选） | ❌ zap 默认同步，高吞吐够用 | ❌ structlog 同步 | ❌ tracing 默认同步 | ✅ pino 异步写入队列 |
+| **时间戳格式** | ISO-8601（logback encoder） | zapcore.ISO8601 | structlog TimeStamper(fmt="iso") | tracing-subscriber 自动 ISO | pino stdTimeFunctions.isoTime |
+| **Caller 信息** | ✅ IncludeCallerData=true | ✅ AddCaller 字段 | ✅ CallsiteParameterAdder | ✅ .with_file + .with_line_number | ❌ 默认无（pino caller 需额外） |
+| **Request 级字段传递** | ⭐⭐⭐⭐⭐ MDC（自动，全链路透传） | ⭐⭐⭐ context.Context 手动传 | ⭐⭐⭐ contextvars 手动传 | ⭐⭐⭐⭐⭐ span.enter() 自动继承 | ⭐⭐⭐⭐ fastify request.log 自动带 reqId |
+| **错误栈嵌入 JSON** | ✅ Logback 自动把 Throwable 嵌入 stack_trace | ✅ zap.Error(err) + zap.Stack() | ✅ exc_info=True 自动渲染 traceback | ✅ tracing error=(% ?e) 嵌入 | ✅ pino 自动识别 Error，输出 stack |
+| **日志级别控制** | logback-spring.xml 配置 | zap 生产配置过滤 Debug | structlog min_level | EnvFilter：RUST_LOG=debug | pino level 配置 |
+| **滚动切割** | ✅ logback RollingFileAppender | ❌ 不内置（用 lumberjack） | ❌ 不内置 | ❌ 不内置 | ❌ 不内置（用 pino-roll / rotation） |
+| **容器适配（stdout）** | ✅ 推荐，别配 FILE appender | ✅ stdout / stderr | ✅ PrintLoggerFactory → stdout | ✅ stdout | ✅ stdout |
+| **性能排序** | 3️⃣ Logback 中等 | 1️⃣ zap 极快 | 5️⃣ structlog 慢（Python） | 1️⃣ tracing 极快 | 2️⃣ pino 极快 |
+| **优势** | MDC 自动透传、Spring 无缝 | 零分配、极简、并发安全 | processor 链灵活 | Span 嵌套 + 编译期字段 | 异步 + fastify 无缝 |
+| **痛点 & 坑** | XML 配置啰嗦、JVM 冷启动 | context 手动传字段（无自动 MDC） | Python 慢、processor 链 debug 难 | 宏复杂、EnvFilter 语法啰嗦 | caller 默认无、同步写慢用 pino-async |
 
 ---
 
 ## 运行方式
 
-<!-- TODO: 实现后补充启动/运行命令 -->
-
-### Java
+### Java (端口 8105)
 ```bash
-# TODO
+cd scenarios/07-structured-logging/java
+mise exec -- mvn spring-boot:run
 ```
 
-### Go
+### Go (端口 8106)
 ```bash
-# TODO
+cd scenarios/07-structured-logging/go
+go mod tidy   # 首次下载 zap
+go run main.go
 ```
 
-### Python
+### Python (端口 8107)
 ```bash
-# TODO
+cd scenarios/07-structured-logging/python
+pip install -r requirements.txt
+python main.py
 ```
 
-### Rust
+### Rust (端口 8108)
 ```bash
-# TODO
+cd scenarios/07-structured-logging/rust
+cargo run
+# Debug 级别
+RUST_LOG=debug cargo run
 ```
 
-### TS(Node)
+### TS(Node) (端口 8109)
 ```bash
-# TODO
+cd scenarios/07-structured-logging/ts-node
+npm install && npm run dev
+```
+
+### 批量测试
+```bash
+# 统一测试（每个端点各打一条日志）
+echo "=== 结构化日志测试 ==="
+for port in 8105 8106 8107 8108 8109; do
+  echo ""
+  echo "--- Port $port (/ping) ---"
+  curl -s http://localhost:$port/ping | jq -c .
+  echo "--- Port $port (/error) ---"
+  curl -s http://localhost:$port/error | jq -c .
+  echo "--- Port $port (/bench?count=100) ---"
+  curl -s "http://localhost:$port/bench?count=100" | jq -c .
+done
+
+# 观察：每个进程的 stdout 应该输出 JSON 结构化日志
+# 用 jq 过滤查看特定字段：
+# curl -s http://localhost:8105/ping > /dev/null 2>&1 ; echo "stdout 应该有 JSON"
+```
+
+---
+
+## 统一 JSON 输出格式（5 语言对比）
+
+### Java (Logback JSON)
+```json
+{"@timestamp":"2026-10-15T10:00:00.123+08:00","level":"INFO","thread":"main","logger":"c.s.l.LoggingController","message":"ping request handled","requestId":"abc123","userId":"anonymous","path":"/ping","costMs":5}
+```
+
+### Go (zap)
+```json
+{"level":"info","ts":1729000000.123,"caller":"main.go:42","msg":"ping request handled","requestId":"abc123","userId":"anonymous","path":"/ping"}
+```
+
+### Python (structlog)
+```json
+{"event":"ping request handled","level":"info","timestamp":"2026-10-15T02:00:00.123345Z","requestId":"abc123","userId":"anonymous","path":"/ping"}
+```
+
+### Rust (tracing)
+```json
+{"level":"INFO","target":"structured_logging","fields.message":"ping request handled","requestId":"abc123","userId":"anonymous","path":"/ping","t":"2026-10-15T02:00:00.123456Z"}
+```
+
+### TS(Node) (pino)
+```json
+{"level":30,"time":1729000000123,"pid":12345,"hostname":"macbook.local","req":{"id":"abc123","method":"GET","url":"/ping"},"msg":"ping request handled","requestId":"abc123","userId":"anonymous"}
 ```
 
 ---
 
 ## 选型思考
 
-<!-- TODO: 实现后补充选型建议 -->
+### 五种日志库定位
+
+| 场景 | 推荐 | 原因 |
+|------|------|------|
+| **Java/Spring Boot 项目** | ☕ Logback + logstash-logback-encoder | MDC 自动透传，XML 配置 + profile 分环境，社区成熟 |
+| **Go 微服务 / 云原生** | 🐹 zap (SugaredLogger) | 零分配极快，JSON encoder 开箱即用，和 Go 生态无缝 |
+| **Python 项目** | 🐍 structlog | processor 链灵活，链式 API 好用，比原生 logging 强很多 |
+| **Rust 项目 / 高性能服务** | 🦀 tracing + tracing-subscriber | 编译期字段检查，Span 嵌套 + 可视化，tracing-otel 对接 OpenTelemetry |
+| **Node / BFF 层** | 🟦 pino | 异步极快，fastify 无缝集成，pino-pretty 开发体验好 |
+
+### 关键选型决策点
+
+| 问题 | 答案 |
+|------|------|
+| **需要自动传递 requestId（链路追踪）？** | Java MDC 最方便 → Rust span.enter() 次之 → Go/Python/Node 要手动 context |
+| **性能敏感（每秒几十万条）？** | zap = tracing = pino >> Logback >> structlog |
+| **日志写到哪里？** | **云原生：stdout（容器收集）** / 磁盘：zapcore/lumberjack / 外部：Loki/ELK |
+| **需要滚动切割？** | Logback 内置最强，其他语言要外接库 |
+| **统一跨语言格式？** | 都输出 JSON（字段名可以统一约定），用 OpenTelemetry 标准 |
+| **调试时想美化？** | Java/Golangback XML 配 pattern、zap/zapcore.ConsoleEncoder、pino-pretty |
 

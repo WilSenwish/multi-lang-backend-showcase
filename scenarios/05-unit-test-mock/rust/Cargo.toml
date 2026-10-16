@@ -1,0 +1,10 @@
+[package]
+name = "unit-test"
+version = "1.0.0"
+edition = "2021"
+description = "Multi-Lang-Backend-Showcase: Rust 单元测试 & Mock"
+
+[dependencies]
+
+[dev-dependencies]
+mockall = "0.12"

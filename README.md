@@ -1,4 +1,4 @@
-# multi-lang-backend-showcase
+# Multi-Lang-Backend-Showcase
 
 > **Java 后端工程师视角，横向对比 Java / Go / Python / Rust / TS(Node.js)**
 > 
@@ -43,11 +43,19 @@
 ## 📂 仓库结构
 
 ```
-multi-lang-backend-showcase/
+Multi-Lang-Backend-Showcase/
 ├── README.md                 # 你正在读的文件
 ├── ROADMAP.md                # 完整迭代计划 + 进度追踪 ⭐
+├── VERIFICATION.md           # 13 场景 × 5 语言本地验证报告（缺陷清单 + 验证方法）⭐
 ├── docker-compose.yml        # 一键拉起全部 demo 服务（阶段2实现）
 ├── .gitignore
+│
+├── .wb_verify/               # 验证工具链
+│   ├── verify_all.py         # 统一验证脚本（13 场景 × 5 语言）
+│   ├── check_graceful.py     # 场景 12 定点复核（在途请求 / 关闭日志 / 端口释放）
+│   ├── clean_probe_files.py  # 清理沙箱遗留的随机名探针文件
+│   ├── all_logs/             # 每个「场景 × 语言」的运行日志
+│   └── runs/                 # 每次运行的结果归档
 │
 ├── docs/                     # 专题深度文档
 │   ├── philosophy.md         # 五大语言核心设计哲学总对比
@@ -173,12 +181,13 @@ bash bench/http-bench.sh
 | 阶段 | 内容 | 状态 |
 |------|------|------|
 | **Phase 1** | 骨架 + `00-hello-http` + 顶层 README + docs + bench 脚本 | ✅ 已完成 |
-| **Phase 2** | `01-json-serialize` / `02-concurrent-task` ⭐⭐ / `03-cli-tool` | 🔲 待开始 |
-| **Phase 3** | `04-file-io` / `05-unit-test-mock` / `06-simple-rag-demo`（Agent 亮点） | 🔲 待开始 |
-| **Phase 4** | `07-structured-logging` / `08-config-management` / `09-http-client` | 🔲 待开始 |
-| **Phase 5** | `10-rate-limit` / `11-db-crud-pool` / `12-graceful-shutdown` | 🔲 待开始 |
+| **Phase 2** | `01-json-serialize` / `02-concurrent-task` ⭐⭐ / `03-cli-tool` | ✅ 已完成 |
+| **Phase 3** | `04-file-io` / `05-unit-test-mock` / `06-simple-rag-demo`（Agent 亮点） | ✅ 已完成 |
+| **Phase 4** | `07-structured-logging` / `08-config-management` / `09-http-client` | ✅ 已完成 |
+| **Phase 5** | `10-rate-limit` / `11-db-crud-pool` / `12-graceful-shutdown` | ✅ 已完成 |
 
 > **⚠️ 严格按顺序完成，不要追求大而全**。优先保证每个 demo 可运行、文档写到位。
+> **🔍 13 个场景 × 5 语言本地验证结果见 [VERIFICATION.md](VERIFICATION.md)**（含沙箱环境限制说明）。
 
 ---
 

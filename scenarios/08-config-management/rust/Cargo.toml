@@ -1,0 +1,19 @@
+[package]
+name = "config-management"
+version = "1.0.0"
+edition = "2021"
+description = "Multi-Lang-Backend-Showcase: Rust 多环境配置 (config crate)"
+
+[dependencies]
+axum = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+
+# Rust 生态最流行的配置库：config (a-g)
+# 支持 yaml/json/toml/env 多来源合并 + 覆盖
+config = { version = "0.14", features = ["yaml"] }
+
+[profile.release]
+opt-level = 3
+lto = true

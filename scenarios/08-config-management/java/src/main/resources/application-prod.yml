@@ -1,0 +1,10 @@
+# prod 环境覆盖
+myapp:
+  server:
+    port: 8110
+  database:
+    url: "prod-db-cluster:3306"
+    user: "${MYAPP_DB_USER:prod-admin}"
+    pool-size: 20
+  logging:
+    level: "INFO"

@@ -1,7 +1,7 @@
 {
   "name": "concurrent-task",
   "version": "1.0.0",
-  "description": "multi-lang-backend-showcase: TypeScript Node 并发任务处理",
+  "description": "Multi-Lang-Backend-Showcase: TypeScript Node 并发任务处理",
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "build": "tsc",

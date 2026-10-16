@@ -1,0 +1,20 @@
+[package]
+name = "structured-logging"
+version = "1.0.0"
+edition = "2021"
+description = "Multi-Lang-Backend-Showcase: Rust 结构化日志 (tracing)"
+
+[dependencies]
+axum = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v4"] }
+
+# 结构化日志核心：tracing API + tracing-subscriber 实现层
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+
+[profile.release]
+opt-level = 3
+lto = true

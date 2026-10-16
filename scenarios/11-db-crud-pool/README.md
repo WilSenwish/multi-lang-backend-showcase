@@ -66,15 +66,46 @@ DELETE /users/{id}
 
 | 维度 | Java | Go | Python | Rust | TS(Node) |
 |------|------|----|--------|------|----------|
-| **ORM vs 原生 SQL** | | | | | |
-| **SQL 类型安全** | | | | | |
-| **连接池实现** | | | | | |
-| **事务** | | | | | |
-| **分页** | | | | | |
-| **优势** | | | | | |
-| **痛点 & 坑** | | | | | |
+| **端口** | 8125 | 8126 | 8127 | 8128 | 8129 |
+| **数据库** | SQLite (jdbc) | SQLite (glebarez/sqlite) | SQLite | SQLite | SQLite (better-sqlite3) |
+| **ORM / 数据层** | Spring Data JPA | GORM | SQLAlchemy 2.0 | sqlx（手写 SQL） | better-sqlite3（手写 SQL） |
+| **SQL 类型安全** | ❌ 运行时 Hibernate 生成 SQL | ❌ GORM 运行时拼接 | ❌ SQLAlchemy 表达式运行时 | ⭐⭐⭐⭐⭐ **sqlx FromRow 编译期安全** | ❌ better-sqlite3 纯字符串 |
+| **连接池** | ✅ HikariCP（Spring Boot 默认） | ✅ database/sql 内置 | ✅ SQLAlchemy QueuePool | ✅ SqlitePool | ❌ Node 单线程不需要！ |
+| **最大连接数** | maximum-pool-size=10 | SetMaxOpenConns(10) | pool_size=10 | max_connections(10) | N/A（单线程） |
+| **自动建表** | ✅ ddl-auto=update | ✅ GORM AutoMigrate | ✅ Base.metadata.create_all | ✅ CREATE TABLE IF NOT EXISTS | ✅ CREATE TABLE IF NOT EXISTS |
+| **分页实现** | PageRequest | Offset + Limit | query.offset().limit() | LIMIT ? OFFSET ? | LIMIT ? OFFSET ? |
+| **事务** | ✅ @Transactional | ✅ db.Begin() / Commit() | ✅ with Session: | ✅ pool.begin().await | ✅ db.transaction() |
+| **编译期 SQL 校验** | ❌ | ❌ | ❌ | ⭐⭐⭐⭐⭐ **sqlx 宏可选（需真实 DB）** | ❌ |
+| **DDL / Schema 迁移** | Hibernate ddl-auto / Flyway / Liquibase | GORM AutoMigrate | Alembic（外部） | 手写 SQL / sqlx-cli migrate | Prisma migrate / 手写 |
+| **同步/异步** | 同步（JPA 默认） | 同步 | async / sync 都支持 | async（tokio） | **同步（Node 单线程 + better-sqlite3 同步高效）** |
+| **零外部依赖** | ❌ Spring Data JPA + SQLite JDBC | ⚠️ GORM + SQLite 驱动 | ⚠️ SQLAlchemy 2.0 | ❌ sqlx + tokio + axum | ⚠️ better-sqlite3 原生模块 |
+| **代码行数（含 CRUD）** | ~200 行（entity + repo + controller） | ~220 行 | ~200 行 | ~230 行 | ~180 行 |
+| **优势** | Spring Data JPA 零实现代码、HikariCP 业界最快 | GORM 链式 API、标准库连接池 | SQLAlchemy 功能最全、async 支持好 | **sqlx 类型安全**（最大亮点） | Node 单线程同步最简单 |
+| **痛点 & 坑** | JPA 生成 SQL 黑盒、复杂查询 NativeQuery 难用 | GORM 复杂查询失控、SQLite 驱动要选 | SQLAlchemy 2.0 学习曲线陡峭 | sqlx 宏需要真实 DB 连接编译、Cargo 下载慢 | better-sqlite3 原生编译有坑、不支持 Windows ARM |
 
 ---
+
+## 选型思考
+
+### 五种 DB 访问层定位
+
+| 场景 | 推荐 | 原因 |
+|------|------|------|
+| **Java/Spring Boot** | ★ Spring Data JPA + HikariCP | 零实现代码、HikariCP 业界最快、生态成熟 |
+| **Go 微服务** | 🐹 GORM（简单）或 database/sql（精细） | GORM 链式 API 快；database/sql 可控性高 |
+| **Python 数据/AI** | 🐍 SQLAlchemy 2.0 + async | Python 最成熟、功能最全、支持 sync/async |
+| **Rust 高性能** | 🦀 sqlx | **类型安全**是绝杀、SQL 运行时性能碾压 |
+| **Node/BFF 层** | 🟦 Prisma（类型安全 ORM）或 better-sqlite3 | Prisma 生成 TS 类型；better-sqlite3 最轻 |
+
+### 关键选型决策点
+
+| 问题 | 答案 |
+|------|------|
+| **SQL 能否编译期校验？** | 只有 **Rust sqlx** 能（其他语言运行时才知道 SQL 对不对） |
+| **要类型安全 ORM？** | Prisma（TS）/ sqlx（Rust）/ Spring Data JPA（Java 注解） |
+| **连接池配置？** | 全都支持，参数名略有不同 |
+| **分布式？** | 换 MySQL/PostgreSQL，sqlx/Prism/GORM 都支持切换 |
+| **轻量 demo？** | SQLite 零依赖本地文件 ✅ 本次用的方案 |
 
 ## 运行方式
 

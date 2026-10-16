@@ -1,0 +1,13 @@
+[package]
+name = "count"
+version = "1.0.0"
+edition = "2021"
+description = "Multi-Lang-Backend-Showcase: Rust wc 命令行工具"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true

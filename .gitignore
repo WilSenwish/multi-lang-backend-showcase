@@ -16,6 +16,20 @@ go.sum
 *.dll
 *.so
 *.dylib
+# go build 默认在包目录生成同名无扩展名二进制，需逐个忽略（模块名 = 目录名）
+/scenarios/*/go/hello-http
+/scenarios/*/go/json-serialize
+/scenarios/*/go/concurrent-task
+/scenarios/*/go/cli-tool
+/scenarios/*/go/file-io
+/scenarios/*/go/unittest
+/scenarios/*/go/simple-rag-demo
+/scenarios/*/go/structured-logging
+/scenarios/*/go/config-management
+/scenarios/*/go/http-client
+/scenarios/*/go/rate-limit
+/scenarios/*/go/db-crud-pool
+/scenarios/*/go/graceful-shutdown
 
 # Python
 __pycache__/
@@ -43,3 +57,11 @@ Thumbs.db
 # IDE
 *.swp
 *.swo
+
+# 智能体本地工作区（记忆笔记，非项目产物）
+.workbuddy/
+
+# 验证工具链的运行归档（脚本本体保留，仅忽略每次运行的结果快照）
+.wb_verify/runs/
+.wb_verify/all_results.json
+.wb_verify/all_results.md

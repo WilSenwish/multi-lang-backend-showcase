@@ -1,7 +1,7 @@
 {
   "name": "hello-http",
   "version": "1.0.0",
-  "description": "multi-lang-backend-showcase: TypeScript Node fastify hello http service",
+  "description": "Multi-Lang-Backend-Showcase: TypeScript Node fastify hello http service",
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "build": "tsc",

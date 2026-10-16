@@ -1,0 +1,18 @@
+{
+  "name": "json-serialize",
+  "version": "1.0.0",
+  "description": "Multi-Lang-Backend-Showcase: TypeScript Node JSON 序列化对比",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "fastify": "^4.28.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "tsx": "^4.15.0",
+    "typescript": "^5.4.5"
+  }
+}

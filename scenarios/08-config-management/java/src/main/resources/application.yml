@@ -1,0 +1,15 @@
+server:
+  port: 8110
+
+myapp:
+  server:
+    port: 8110
+    host: "0.0.0.0"
+  database:
+    url: "localhost:3306"
+    user: "admin"
+    password: "secret"
+    pool-size: 10
+  logging:
+    level: "INFO"
+    json: true
