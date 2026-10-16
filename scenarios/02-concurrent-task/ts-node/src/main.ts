@@ -14,7 +14,7 @@
  * 并发限流原语：手写一个简单的 p-limit（不引入额外依赖）
  * 思路：用一个队列存 Promise 工厂函数，同时最多 N 个在执行
  */
-import Fastify from 'fastify';
+import Fastify, { FastifyReply } from 'fastify';
 
 const PORT = 8089;
 
@@ -26,7 +26,9 @@ const PORT = 8089;
  */
 function pLimit<T>(limit: number) {
   let active = 0;
-  const queue: Array<() => Promise<T>> = [];
+  // 队列里存的是 run 闭包（() => void），不是任务工厂本身 ——
+  // 曾经这里声明成 Array<() => Promise<T>>，tsc 直接报 TS2345（tsx 不类型检查所以长期潜伏）
+  const queue: Array<() => void> = [];
 
   function enqueue(fn: () => Promise<T>): Promise<T> {
     return new Promise<T>((resolve, reject) => {
@@ -54,7 +56,7 @@ function pLimit<T>(limit: number) {
   }
 
   // 触发执行队列里的任务（递归入口）
-  function runTask(task: () => Promise<T>) {
+  function runTask(task: () => void) {
     // 这个函数会在 enqueue 的 active-- 之后被调用
     // 但因为我们在 enqueue 里已经处理了，这里是空的
     task();
@@ -98,13 +100,45 @@ function executeTask(id: number, delayMs: number): Promise<TaskResult> {
   });
 }
 
-fastify.post<{ Body: RunRequest }>('/run', async (request, reply) => {
-  const req = request.body;
+// 统一契约（与其余四门对齐）：
+//   - 字段缺省 → 默认值 100/100/10
+//   - 显式非法值 / 非整数 / 空 body → 400
+//   - 方法不是 POST → 405（fastify 默认对未匹配方法返回 404，这里显式抹平）
+function badRequest(reply: FastifyReply, message: string) {
+  reply.code(400);
+  return { error: message };
+}
 
-  // 边界保护
-  const taskCount = Math.max(1, req.task_count ?? 100);
-  const delayMs = Math.max(0, req.task_delay_ms ?? 100);
-  const concurrency = Math.max(1, Math.min(req.concurrency ?? 10, taskCount));
+fastify.all('/run', async (request, reply) => {
+  if (request.method !== 'POST') {
+    reply.code(405);
+    return { error: 'method not allowed' };
+  }
+
+  const body = request.body;
+  if (body === undefined || body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return badRequest(reply, 'request body must be a JSON object');
+  }
+  const req = body as Partial<RunRequest>;
+
+  // 缺省 → 默认值
+  const taskCount = req.task_count ?? 100;
+  const delayMs = req.task_delay_ms ?? 100;
+  const concurrencyRaw = req.concurrency ?? 10;
+
+  // 显式非法值 → 400（不做静默夹取）
+  if (!Number.isInteger(taskCount) || taskCount < 1) {
+    return badRequest(reply, 'task_count must be an integer >= 1');
+  }
+  if (!Number.isInteger(delayMs) || delayMs < 0) {
+    return badRequest(reply, 'task_delay_ms must be an integer >= 0');
+  }
+  if (!Number.isInteger(concurrencyRaw) || concurrencyRaw < 1) {
+    return badRequest(reply, 'concurrency must be an integer >= 1');
+  }
+
+  // 并发数不超过任务数（契约行为）
+  const concurrency = Math.min(concurrencyRaw, taskCount);
 
   const start = performance.now();
 
@@ -134,7 +168,7 @@ fastify.post<{ Body: RunRequest }>('/run', async (request, reply) => {
     results,
   };
 
-  reply.send(response);
+  return response;
 });
 
 const startServer = async () => {

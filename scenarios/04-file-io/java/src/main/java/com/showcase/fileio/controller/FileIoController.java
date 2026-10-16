@@ -1,7 +1,9 @@
 package com.showcase.fileio.controller;
 
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
 import java.nio.file.*;
@@ -32,6 +34,9 @@ import java.util.concurrent.atomic.AtomicLong;
 @RequestMapping("/file")
 public class FileIoController {
 
+    /** content 为对象时序列化为规范 JSON（紧凑分隔符、非 ASCII 不转义、HTML 字符不转义） */
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
     /**
      * POST /file/write — 写文件（覆盖或追加）
      * body: {"path": "/tmp/test.json", "content": {...}, "append": false}
@@ -40,8 +45,11 @@ public class FileIoController {
     public Map<String, Object> write(@RequestBody Map<String, Object> body) {
         String pathStr = (String) body.get("path");
         Object contentObj = body.get("content");
-        boolean append = body.getOrDefault("append", false) instanceof Boolean
-                ? (Boolean) body.get("append") : false;
+        // 曾经这里写成 getOrDefault("append", false) instanceof Boolean ? (Boolean) body.get("append") : false
+        // —— 键缺失时 getOrDefault 拿到默认值 false 通过检查，但 body.get("append") 返回 null，
+        // 拆箱直接 NPE（而且抛在 try 外面，变成 500）。契约用例"不带 append 字段的写"当场抓住。
+        Object appendObj = body.get("append");
+        boolean append = appendObj instanceof Boolean && (Boolean) appendObj;
 
         Map<String, Object> resp = new LinkedHashMap<>();
         try {
@@ -53,11 +61,13 @@ public class FileIoController {
                 Files.createDirectories(parent);
             }
 
-            // 把 content 对象序列化为 JSON 字符串存文件
-            // 为了统一对比，直接写 String 内容
+            // 把 content 转成字符串写入：
+            // - 字符串 → 原样写入
+            // - 其他类型 → 规范 JSON（与 Go/Python/Rust/TS 的序列化结果逐字节一致；
+            //   曾经这里用 String.valueOf(map) 写出 Java 的 toString 格式 {k=v}，不是 JSON）
             String content = contentObj instanceof String
                     ? (String) contentObj
-                    : String.valueOf(contentObj);
+                    : MAPPER.writeValueAsString(contentObj);
 
             byte[] data = content.getBytes(java.nio.charset.StandardCharsets.UTF_8);
             OpenOption[] options = append
@@ -71,6 +81,7 @@ public class FileIoController {
             resp.put("bytes_written", data.length);
             resp.put("append", append);
         } catch (Exception e) {
+            // 写失败不回 5xx：与其余四门一致，用 200 + success:false 表达领域级失败
             resp.put("success", false);
             resp.put("error", e.getMessage());
         }
@@ -83,6 +94,10 @@ public class FileIoController {
      */
     @GetMapping("/read")
     public ResponseEntity<?> read(@RequestParam String path) {
+        // 统一契约：path 缺失/为空串 → 400（Spring 对缺失参数本就是 400，空串在此显式补齐）
+        if (path == null || path.isBlank()) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of("error", "missing path param"));
+        }
         try {
             Path p = Paths.get(path);
             if (!Files.exists(p)) {
@@ -111,6 +126,10 @@ public class FileIoController {
     public ResponseEntity<?> scan(
             @RequestParam String dir,
             @RequestParam(defaultValue = "true") boolean recursive) {
+        // 统一契约：dir 缺失/为空串 → 400
+        if (dir == null || dir.isBlank()) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of("error", "missing dir param"));
+        }
         try {
             Path start = Paths.get(dir);
             if (!Files.exists(start)) {

@@ -19,16 +19,27 @@ from __future__ import annotations
 
 import asyncio
 import time
-from fastapi import FastAPI
-from pydantic import BaseModel, Field
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 app = FastAPI(title="concurrent-task-python", version="1.0.0")
 
 
+# 统一契约：FastAPI 默认把请求体解析/校验失败返回 422，与其余四门的 400 不一致。
+# 这里显式改写成 400（契约：非法入参一律 400）。
+@app.exception_handler(RequestValidationError)
+async def _validation_to_400(request: Request, exc: RequestValidationError):
+    return JSONResponse(status_code=400, content={"error": "invalid request"})
+
+
 class RunRequest(BaseModel):
-    task_count: int = Field(default=100, ge=1)
-    task_delay_ms: int = Field(default=100, ge=0)
-    concurrency: int = Field(default=10, ge=1)
+    # 字段缺省走默认值 100/100/10；显式传非法值由 run() 统一返回 400
+    # （不用 Field(ge=...)：pydantic 的校验错误是 422，与其余四门的 400 不一致）
+    task_count: int = 100
+    task_delay_ms: int = 100
+    concurrency: int = 10
 
 
 class TaskResult(BaseModel):
@@ -62,7 +73,15 @@ async def _execute_task(task_id: int, delay_ms: int, semaphore: asyncio.Semaphor
 
 @app.post("/run", response_model=RunResponse)
 async def run(req: RunRequest) -> RunResponse:
-    # 边界保护
+    # 统一契约：显式传入的非法值一律 400（与 Go/Java/Rust/TS 对齐）
+    if req.task_count < 1:
+        raise HTTPException(status_code=400, detail="task_count must be >= 1")
+    if req.task_delay_ms < 0:
+        raise HTTPException(status_code=400, detail="task_delay_ms must be >= 0")
+    if req.concurrency < 1:
+        raise HTTPException(status_code=400, detail="concurrency must be >= 1")
+
+    # 边界保护：并发数不超过任务数
     concurrency = min(req.concurrency, req.task_count)
 
     start = time.perf_counter()

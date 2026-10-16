@@ -93,6 +93,22 @@ curl -s http://localhost:8095/file/scan?dir=/tmp
 curl -s 'http://localhost:8095/file/scan?dir=/tmp&recursive=false' | jq .
 ```
 
+### 契约要点（验证器 `kind=contract` 逐条断言）
+
+除上面的端点形状外，以下行为是**五门语言统一的显式契约**（`.wb_verify/verify_all.py` 的 `CASES_04`，28 个用例）：
+
+| 契约 | 说明 |
+|------|------|
+| `content` 序列化 | 字符串 → 原样写入；其他类型 → **规范 JSON**（紧凑分隔符、非 ASCII 不转义、HTML 字符不转义），五门语言逐字节一致 |
+| 声称值 vs 真实值 | 响应里的 `bytes_written` / `bytes` 必须与**验证器本地独立读磁盘**的结果一致（防止"计数对、内容被写错"） |
+| 写失败 | 父路径是文件等场景 → **200 + `{"success":false,"error":...}`**，不回 5xx |
+| 追加模式 | `append:true` 追加到文件末尾，`bytes_written` 只计**本次**写入的字节数 |
+| 目录创建 | 写入路径的父目录不存在时自动递归创建 |
+| 读文件 | 不存在 → **404**；是目录 → **400**；`path` 缺失或空串 → **400** |
+| 目录扫描 | `recursive` 缺省为 `true`，仅字面 `"false"` 为非递归；只统计**常规文件**；目录不存在 → **404**；是文件 → **400**；`dir` 缺失或空串 → **400** |
+| 方法限制 | 三个端点方法不匹配 → **405**（fastify 默认给 404，实现侧已抹平）；未匹配路径 → **404** |
+| 扫描 oracle | `files` / `total_bytes` 与验证器本地 `os.walk` / `os.listdir` 独立遍历的结果比对 |
+
 ---
 
 ## 运行方式

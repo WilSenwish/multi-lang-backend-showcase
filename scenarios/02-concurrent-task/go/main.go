@@ -21,10 +21,20 @@ import (
 )
 
 // RunRequest 请求体
+// 用指针类型区分"字段缺省"与"显式传 0"：缺省走默认值 100/100/10，
+// 显式传非法值返回 400（与其余四门语言的契约对齐）。
 type RunRequest struct {
-	TaskCount     int `json:"task_count"`
-	TaskDelayMs   int `json:"task_delay_ms"`
-	Concurrency   int `json:"concurrency"`
+	TaskCount   *int `json:"task_count"`
+	TaskDelayMs *int `json:"task_delay_ms"`
+	Concurrency *int `json:"concurrency"`
+}
+
+// firstOf 返回指针指向的值，缺省时用默认值
+func firstOf(p *int, def int) int {
+	if p == nil {
+		return def
+	}
+	return *p
 }
 
 // TaskResult 单个任务结果
@@ -36,12 +46,12 @@ type TaskResult struct {
 
 // RunResponse 响应体
 type RunResponse struct {
-	TotalTasks   int         `json:"total_tasks"`
-	Concurrency  int         `json:"concurrency"`
-	TotalTimeMs  int64       `json:"total_time_ms"`
-	Throughput   float64     `json:"throughput"`
-	TaskDelayMs  int         `json:"task_delay_ms"`
-	Results      []TaskResult `json:"results"`
+	TotalTasks  int          `json:"total_tasks"`
+	Concurrency int          `json:"concurrency"`
+	TotalTimeMs int64        `json:"total_time_ms"`
+	Throughput  float64      `json:"throughput"`
+	TaskDelayMs int          `json:"task_delay_ms"`
+	Results     []TaskResult `json:"results"`
 }
 
 const listenAddr = ":8086"
@@ -60,18 +70,27 @@ func runHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 边界保护
-	if req.TaskCount < 1 {
-		req.TaskCount = 100
+	// 字段缺省 → 默认值 100/100/10（与 Python/Java/Rust/TS 一致）
+	taskCount := firstOf(req.TaskCount, 100)
+	delayMs := firstOf(req.TaskDelayMs, 100)
+	concurrency := firstOf(req.Concurrency, 10)
+
+	// 统一契约：显式传入的非法值一律 400，不再静默夹取
+	if taskCount < 1 {
+		http.Error(w, "task_count must be >= 1", http.StatusBadRequest)
+		return
 	}
-	if req.TaskDelayMs < 0 {
-		req.TaskDelayMs = 0
+	if delayMs < 0 {
+		http.Error(w, "task_delay_ms must be >= 0", http.StatusBadRequest)
+		return
 	}
-	if req.Concurrency < 1 {
-		req.Concurrency = 10
+	if concurrency < 1 {
+		http.Error(w, "concurrency must be >= 1", http.StatusBadRequest)
+		return
 	}
-	if req.Concurrency > req.TaskCount {
-		req.Concurrency = req.TaskCount
+	// 并发数不超过任务数（契约行为）
+	if concurrency > taskCount {
+		concurrency = taskCount
 	}
 
 	start := time.Now()
@@ -80,11 +99,11 @@ func runHandler(w http.ResponseWriter, r *http.Request) {
 	// buffered channel 作为 "并发限流阀门"
 	// 容量 = concurrency，每个 goroutine 开始前往 channel 发送一个信号，完成后取出
 	// channel 满了就阻塞发送 → 天然限制同时执行的 goroutine 数量
-	sem := make(chan struct{}, req.Concurrency)
-	results := make([]TaskResult, req.TaskCount)
+	sem := make(chan struct{}, concurrency)
+	results := make([]TaskResult, taskCount)
 	var wg sync.WaitGroup
 
-	for i := 0; i < req.TaskCount; i++ {
+	for i := 0; i < taskCount; i++ {
 		wg.Add(1)
 		sem <- struct{}{} // 占一个槽位（满了就阻塞等待）
 
@@ -93,7 +112,7 @@ func runHandler(w http.ResponseWriter, r *http.Request) {
 			defer func() { <-sem }() // 释放槽位
 
 			taskStart := time.Now()
-			time.Sleep(time.Duration(req.TaskDelayMs) * time.Millisecond)
+			time.Sleep(time.Duration(delayMs) * time.Millisecond)
 			duration := time.Since(taskStart).Milliseconds()
 
 			results[id] = TaskResult{
@@ -108,17 +127,19 @@ func runHandler(w http.ResponseWriter, r *http.Request) {
 	// ==============================
 
 	elapsed := time.Since(start).Milliseconds()
-	throughput := 0.0
+	// 契约：total_time_ms 为 0 时 throughput = task_count（与 Python/Java/Rust/TS 一致；
+	// 曾经这里初值 0.0，零延迟任务下五门语言只有 Go 给出 0）
+	throughput := float64(taskCount)
 	if elapsed > 0 {
-		throughput = math.Round(float64(req.TaskCount)*1000.0/float64(elapsed)*100) / 100
+		throughput = math.Round(float64(taskCount)*1000.0/float64(elapsed)*100) / 100
 	}
 
 	resp := RunResponse{
-		TotalTasks:  req.TaskCount,
-		Concurrency: req.Concurrency,
+		TotalTasks:  taskCount,
+		Concurrency: concurrency,
 		TotalTimeMs: elapsed,
 		Throughput:  throughput,
-		TaskDelayMs: req.TaskDelayMs,
+		TaskDelayMs: delayMs,
 		Results:     results,
 	}
 

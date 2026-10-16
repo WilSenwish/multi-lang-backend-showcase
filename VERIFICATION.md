@@ -28,6 +28,8 @@
 
 共识别并修复 **39 条代码/文档缺陷**：首轮 34 条（编译期/启动期硬错误为主，见 §4），
 本轮复核新增 **5 条**（都是"能跑起来但行为不对"的静默缺陷，见 §5）。
+验证强度加强计划批次 1/2（§12）又识别并修复 **17 处跨语言偏差**（00/01 五处 + 02/04 十二处）——
+在"端口监听级"判定下，这些偏差没有任何一宗会暴露。
 验证器本身的判定缺陷与设计要点见 §7（共 11 条），其中本轮修掉 3 条判定缺陷 ——
 **其中一条（`"shutdown" in log`）曾让真正的崩溃被记成 PASS**。
 
@@ -43,9 +45,9 @@
 |---|------|------|---------|------|----|--------|------|---------|
 | 00 | hello-http | contract | **契约级**（6 用例：name 各形态 + 404/405 边界） | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 01 | json-serialize | contract | **契约级**（5 端点逐字段 + 规范 JSON 逐字节） | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 02 | concurrent-task | http | 端口监听 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 02 | concurrent-task | contract | **契约级**（12 用例：限流生效的耗时上下界 + results 保序 + throughput 自洽 + 入参 400/405） | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 03 | cli-tool | cli | 数值基准 + 选项语义 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 04 | file-io | http | 端口监听 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 04 | file-io | contract | **契约级**（28 用例：write→read 往返 + 本地磁盘 oracle + scan 遍历 oracle + 400/404/405 边界） | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 05 | unit-test-mock | test | 测试摘要（用例数） | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 06 | simple-rag-demo | http | 端口监听 | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 07 | structured-logging | http | 端口监听 | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -84,7 +86,7 @@
   - `contract`：**通用用例引擎**（`verify_cases`）—— 启动服务 → 逐个发请求 → 逐字段比对
     （`json_match` 递归子集/全等匹配，bool 与 int 分开判）。用例支持状态码、`Content-Type`、
     期望 JSON（`exact` 控制键集合）、自定义 `assert` 回调。自场景 00 起，http 场景
-    正从"端口监听"逐批升级到契约级（当前 00、01 已完成）。
+    正从"端口监听"逐批升级到契约级（当前 00、01、02、04 已完成，见 §12）。
   - `http`：启动服务 → **原始 TCP 连接**探活（不用 curl/urllib，见 §7.1）→ 关闭进程组。
   - `cli`：对仓库根 `README.md` 跑 `-l -w`，把输出与**独立计算的基准值交叉核对**；
     再逐个跑 `-l` / `-w` / `-c`，校验**单选项只输出对应指标**；最后跑无选项，校验三项全输出。
@@ -657,18 +659,9 @@ tasks=8, task_ms=2000, fail_index=3, fail_after_ms=250
 
 ## 11. 已知契约不一致（待处理，未修改）
 
-**`02-concurrent-task` 的 Java 响应字段是 camelCase，其余四门语言是 snake_case。**
-
-Spring Boot 默认用 Jackson 的 camelCase 命名策略，因此 Java 实际输出 `totalTasks` / `totalTimeMs`，
-而 Go / Python / Rust / TS-Node 输出 `total_tasks` / `total_time_ms` ——
-**该场景 README 中声明的"统一 API 契约"实际上并未对齐**，只是当时的判定只到"端口监听级"，
-所以一直没有暴露。
-
-场景 13 已通过 `spring.jackson.property-naming-strategy=SNAKE_CASE` 规避（见其 `application.properties`）。
-
-> **这是一个典型的"静默不一致"**：五门语言各自都能跑通、各自都"有响应"，
-> 唯有做契约级比对才会发现。建议在给 02 补契约级断言时一并修复。
-> 本次未改动 02，以免影响已通过的验证基线。
+> 原记录的 `02-concurrent-task` Java camelCase 问题已在**验证强度加强计划批次 2** 中修复
+> （`spring.jackson.property-naming-strategy=SNAKE_CASE`，与场景 13 同方案），详见 §12 批次 2。
+> 当前无其他已知的跨语言契约不一致。
 
 ---
 
@@ -685,7 +678,7 @@ Spring Boot 默认用 Jackson 的 camelCase 命名策略，因此 Java 实际输
 | 批次 | 场景 | 状态 |
 |------|------|------|
 | 1 | `00-hello-http` + `01-json-serialize` | ✅ 已完成 |
-| 2 | `02-concurrent-task` + `04-file-io` | ⬜ 待开始 |
+| 2 | `02-concurrent-task` + `04-file-io` | ✅ 已完成 |
 | 3 | `06-simple-rag-demo` + `07-structured-logging` | ⬜ 待开始 |
 | 4 | `08-config-management` + `09-http-client` | ⬜ 待开始 |
 | 5 | `10-rate-limit` + `11-db-crud-pool` | ⬜ 待开始 |
@@ -728,3 +721,54 @@ Python / Java / TS 保留输入顺序；排序输入让五门语言的 `json` �
 同时把"键序差异"这个事实写进 README 而不是藏进实现。
 
 批次 1 结果：`python3 .wb_verify/verify_all.py 00 01` → **10/10 全绿**（归档见 `.wb_verify/runs/20261016-223045_sub-00_01.md`）。
+
+### 批次 2（02 + 04）实测：并发语义与文件契约，共修复 12 处跨语言偏差
+
+**场景 02（并发任务处理，12 用例）**：标准并发 / 并发数大于任务数 / 零延迟 / 字段缺省 /
+非法入参 4 种 / 畸形 JSON / 空 body / 方法 405 / 并发双请求。核心断言是
+`total_time_ms ∈ [ceil(n/c)*delay*0.9, ceil(n/c)*delay*1.5+300]` —— **下界证明限流真的生效**
+（不限流会低到约一个 delay），**上界证明没有退化成串行**（串行 = n*delay）；
+外加 results 的 id 必须严格 `0..n-1` 保序、`throughput` 与 `total_time_ms` 自洽（容差 0.02）。
+
+| 语言 | 偏差 | 修正 |
+|------|------|------|
+| Java | 响应是 camelCase（`totalTasks`/`totalTimeMs`），与其余四门 snake_case 不一致；**且请求绑定同样受影响** —— README 里的 `{"task_count":100}` 从未真正绑定，只是默认值碰巧蒙对 | `application.properties` 加 `spring.jackson.property-naming-strategy=SNAKE_CASE`（与场景 13 同方案；该策略同时作用于反序列化） |
+| TS-Node | 方法不匹配返回 404（fastify 默认行为，与批次 1 的场景 00 同类） | `fastify.all` + 显式方法检查返回 405 |
+| Go | 请求体用非指针 `int`，**分不清"字段缺省"与"显式传 0"**：缺省时静默按默认值、传 0 也静默夹到 100 | 改指针类型 + `firstOf` 辅助函数，缺省走默认值、显式非法值返回 400 |
+| Python | pydantic `Field(ge=1)` 的校验失败是 **422**，与其余四门的 400 不一致 | 去掉约束改手动校验 `HTTPException(400)`，并注册 `RequestValidationError` 处理器把解析/校验错误统一映射为 400 |
+| Rust | axum 的 `Json` 提取器对"语法错误"给 400、对"类型错误"给 **422**，语义分裂 | 改手动 `serde_json::from_slice` 解析，统一映射 400（`task_delay_ms` 相应改 `i64` 以便校验负值） |
+| Go | 零延迟任务下 `elapsed=0` 时 throughput 保持初值 **0**，其余四门给 `task_count` | 初值改 `float64(taskCount)` |
+| Java/Go/Python/Rust/TS | 非法入参（`task_count<1` 等）原本被静默夹取，契约要求 400 | 五门统一显式校验返回 400 |
+
+**场景 04（文件读写 & 目录遍历，28 用例）**：写→读往返（字符串 / 对象两种 content）、
+覆盖 + 追加、深层目录自动创建、递归 / 非递归 / 空目录扫描、读不存在 404、读目录 400、
+扫描不存在 404、扫描文件 400、写失败（父路径是文件）、参数缺失 / 空串 400、方法 405 ×3、未匹配路径 404。
+除接口字段外，**"声称的字节数"必须与验证器本地独立读磁盘的结果一致**，
+scan 的 `files`/`total_bytes` 与本地 `os.walk`/`os.listdir` oracle 比对。
+
+| 语言 | 偏差 | 修正 |
+|------|------|------|
+| Java | `content` 为对象时用 `String.valueOf(map)` 写出的是 **Java 的 toString 格式** `{k=v}`，根本不是 JSON | 改用 `ObjectMapper.writeValueAsString`（紧凑、不转义非 ASCII / HTML 字符） |
+| Java | `append` 字段缺失时 NPE：`getOrDefault("append",false) instanceof Boolean` 通过检查，但 `body.get("append")` 返回 null，**拆箱即炸**（且抛在 try 外面变成 500） | 先取 `Object appendObj` 再判类型 —— 这是一个此前从未被触发的既有缺陷，"不带 append 的写"用例当场抓住 |
+| Go | `writeJSON` 的 `json.Encoder` 默认 HTML 转义，读回含 `<` `>` `&` 的内容会变成 `\u003c`（与批次 1 的场景 01 同类） | `Encoder` + `SetEscapeHTML(false)` |
+| Python | 对象 content 的 `json.dumps` 默认带空格分隔符（`{"a": 1}`），与其余四门的紧凑形式对不上 | 统一 `separators=(",", ":")` |
+| Rust | 写失败返回 **500**，其余四门是 200 + `success:false` | 改 200 + `success:false`，错误详情放 body |
+| Python / TS-Node | 必填 query 参数缺失时分别返回 422 / **500**（TS 是 `fs.stat(undefined)` 的 TypeError），Go/Java/Rust 是 400 | Python 改 `Optional[str]` 显式 400；TS 显式检查返回 400 |
+
+**方法论沉淀**：
+
+- **总耗时的上下界是"限流是否生效"的唯一硬证据**：只断言"总耗时 > 0"的话，
+  把并发限流整个删掉（100 个任务全并行）照样通过 —— 下界（≈理想波次）与上界（< 串行）缺一不可。
+- **"声称值"与"真实值"分开验**再次立功：04 的 `bytes_written` 若只跟响应里的字段自洽，
+  Java 的 toString 格式写盘 bug 就漏了（计数对、内容错）；必须本地读磁盘比对。
+- **反向对照的便宜替代**：本批每个修正项都对应一个"若不改必失败"的既有用例
+  （如 02 删掉 Go 的 `firstOf` → "字段缺省"用例失败；04 还原 Java 的 `String.valueOf` → 磁盘内容断言失败）。
+- **验证器自身也会错**：批次 2 首跑时"并发双请求"用例全军覆没，原因是验证器用
+  `("exc", repr(e))` 元组标记异常，而 `http_req` 的正常返回值也是元组 ——
+  **每次成功响应都被误判成"请求异常"**。改用 dict 包装标记后才恢复。
+  教训：异常哨兵值必须与正常返回值的类型空间隔离。
+- **asyncio.sleep 有毫秒取整误差**：Python 的 `sleep(100ms)` 实测只测到 99ms
+  （事件循环经 kqueue 的毫秒粒度取整），其余四门的精确保眠会超过 delay。
+  契约下界因此留 2ms 容忍并写进注释，而不是强行抹平。
+
+批次 2 结果：`python3 .wb_verify/verify_all.py 02 04` → **10/10 全绿**（归档见 `.wb_verify/runs/20261016-233015_sub-02_04.md`）。

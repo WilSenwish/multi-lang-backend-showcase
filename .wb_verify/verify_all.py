@@ -15,7 +15,7 @@
 #                          而非 BigInt / 有符号输出）在"端口通"的判定下不可能被发现。
 #  - 每个 (场景,语言) 用 try/except 包裹，单个失败/超时不影响其余；超时返回 -999
 #  - 最后一定写出 JSON/MD 结果（含中断保护）
-import os, re, shutil, sys, subprocess, time, signal, json, socket, threading, http.client, urllib.request, urllib.error, traceback, hashlib
+import os, re, shutil, sys, subprocess, time, signal, json, socket, threading, http.client, urllib.request, urllib.error, traceback, hashlib, tempfile, math
 
 # 路径全部相对本文件推导，不写死绝对路径 —— 仓库目录改名/搬家后脚本仍然可用
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -70,9 +70,9 @@ LANGS = ["java", "go", "python", "rust", "ts-node"]
 SCENARIOS = [
     {"name":"00-hello-http","kind":"contract","ports":{"java":8080,"go":8081,"python":8082,"rust":8083,"ts-node":8084}},
     {"name":"01-json-serialize","kind":"contract","ports":{"java":8090,"go":8091,"python":8092,"rust":8093,"ts-node":8094}},
-    {"name":"02-concurrent-task","kind":"http","ports":{"java":8085,"go":8086,"python":8087,"rust":8088,"ts-node":8089}},
+    {"name":"02-concurrent-task","kind":"contract","ports":{"java":8085,"go":8086,"python":8087,"rust":8088,"ts-node":8089}},
     {"name":"03-cli-tool","kind":"cli"},
-    {"name":"04-file-io","kind":"http","ports":{"java":8095,"go":8096,"python":8097,"rust":8098,"ts-node":8099}},
+    {"name":"04-file-io","kind":"contract","ports":{"java":8095,"go":8096,"python":8097,"rust":8098,"ts-node":8099}},
     {"name":"05-unit-test-mock","kind":"test"},
     {"name":"06-simple-rag-demo","kind":"http","ports":{"java":8100,"go":8101,"python":8102,"rust":8103,"ts-node":8104}},
     {"name":"07-structured-logging","kind":"http","ports":{"java":8105,"go":8106,"python":8107,"rust":8108,"ts-node":8109}},
@@ -989,14 +989,15 @@ def verify_error(lang, port, d, log):
 #  - 标量：严格相等；bool 与 int 分开判（避免 True == 1 的假阳性）
 def http_req(port, method, path, body=None, headers=None, timeout=30):
     """发一个 HTTP 请求，返回 (status, headers(键小写), body)。
-    body 为 dict 时以 JSON 发送；响应按 Content-Type 决定是否解析为 JSON，失败退化为文本。
+    body 为 dict 时以 JSON 发送；为 str 时按原样发送（用于"畸形 JSON"用例）；
+    响应按 Content-Type 决定是否解析为 JSON，失败退化为文本。
     用 http.client 而不是 urllib：前者默认不走代理，避免 HTTP_PROXY 把 localhost 请求劫持成 502。"""
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
     try:
         payload = None
         hdrs = dict(headers or {})
         if body is not None:
-            payload = json.dumps(body)
+            payload = body if isinstance(body, str) else json.dumps(body)
             hdrs.setdefault("Content-Type", "application/json")
         conn.request(method, path, payload, hdrs)
         resp = conn.getresponse()
@@ -1205,11 +1206,415 @@ def verify_01(lang, port, d, log):
     return verify_cases(lang, port, d, log, CASES_01)
 
 
+# ================= 场景 02：并发任务处理 =================
+# 统一契约（README「统一接口」小节的显式化 + 抹平后的边界行为）：
+#   POST /run，字段 task_count / task_delay_ms / concurrency，缺省 → 100/100/10
+#   响应键集合恰好 {total_tasks, concurrency, total_time_ms, throughput, task_delay_ms, results}
+#   results[i] = {id, status, duration_ms}，id 按 0..n-1 严格保序，status 全 "ok"
+#   duration_ms ∈ [delay-2, delay+1000]（sleep 至少约 delay 毫秒；下界留 2ms 容忍
+#       asyncio 经 kqueue 的毫秒取整误差，其余四门用精确保眠会超过 delay）
+#   concurrency 回显 min(请求 concurrency, task_count)
+#   throughput ≈ task_count / (total_time_ms/1000)（两位小数，容差 0.02）
+#   total_time_ms ∈ [ceil(n/c)*delay*0.9, ceil(n/c)*delay*1.5+300]
+#       —— 下界证明"限流真的生效"（不限流会低到 ~delay），上界证明"没有退化成串行"（串行是 n*delay）
+#   非法入参（task_count<1 / concurrency<1 / task_delay_ms<0 / 非整数 / 畸形 JSON / 空 body）→ 400
+#   非 POST 方法 → 405（fastify 默认给 404，实现侧已抹平）
+P02_STD = (10, 50, 5)     # (task_count, task_delay_ms, concurrency)
+P02_WIDE = (4, 40, 10)    # concurrency > task_count → 回显 min(c, n)
+P02_ZERO = (8, 0, 4)      # delay=0 的边界
+P02_DUAL = (6, 60, 3)     # 并发双请求用例
+
+
+def _p02_check_run(n, delay, conc):
+    """标准 /run 响应的契约校验器（n=任务数, delay=每任务毫秒, conc=请求并发度）。"""
+    eff_conc = min(conc, n)
+    waves = math.ceil(n / eff_conc) if eff_conc > 0 else 1
+    ideal = waves * delay
+    lo, hi = ideal * 0.9, ideal * 1.5 + 300
+
+    def assert_fn(status, headers, body, fails, label):
+        if not isinstance(body, dict):
+            fails.append("[%s] 响应不是 JSON 对象: %r" % (label, body))
+            return
+        want_keys = {"total_tasks", "concurrency", "total_time_ms", "throughput",
+                     "task_delay_ms", "results"}
+        if set(body) != want_keys:
+            fails.append("[%s] 键集合不一致: %s" % (label, sorted(body)))
+            return
+        if body["total_tasks"] != n:
+            fails.append("[%s] total_tasks=%r（期望 %d）" % (label, body["total_tasks"], n))
+        if body["task_delay_ms"] != delay:
+            fails.append("[%s] task_delay_ms=%r（期望 %d）" % (label, body["task_delay_ms"], delay))
+        if body["concurrency"] != eff_conc:
+            fails.append("[%s] concurrency=%r（期望 min(c,n)=%d）"
+                         % (label, body["concurrency"], eff_conc))
+        total = body["total_time_ms"]
+        if not isinstance(total, int) or isinstance(total, bool) or total < 0:
+            fails.append("[%s] total_time_ms=%r 不是非负整数" % (label, total))
+            return
+        if total < lo:
+            fails.append("[%s] total_time_ms=%d < 下界 %.0f —— 并发限流疑似未生效"
+                         % (label, total, lo))
+        if total > hi:
+            fails.append("[%s] total_time_ms=%d > 上界 %.0f —— 疑似退化成串行（串行应为 %d）"
+                         % (label, total, hi, n * delay))
+        tp = body["throughput"]
+        if not isinstance(tp, (int, float)) or isinstance(tp, bool):
+            fails.append("[%s] throughput=%r 不是数值" % (label, tp))
+        else:
+            want_tp = round(n * 1000.0 / total, 2) if total > 0 else float(n)
+            if abs(tp - want_tp) > 0.02:
+                fails.append("[%s] throughput=%r 与自洽值 %.2f 不符（容差 0.02）"
+                             % (label, tp, want_tp))
+        results = body["results"]
+        if not isinstance(results, list) or len(results) != n:
+            fails.append("[%s] results 长度 %r（期望 %d）"
+                         % (label, len(results) if isinstance(results, list) else results, n))
+            return
+        ids = [r.get("id") if isinstance(r, dict) else None for r in results]
+        if ids != list(range(n)):
+            fails.append("[%s] results 的 id 序列不是严格 0..%d（保序契约）" % (label, n - 1))
+        for i, r in enumerate(results):
+            if not isinstance(r, dict) or set(r) != {"id", "status", "duration_ms"}:
+                fails.append("[%s] results[%d] 键集合异常: %r" % (label, i, r))
+                continue
+            if r["status"] != "ok":
+                fails.append("[%s] results[%d].status=%r（期望 ok）" % (label, i, r["status"]))
+            dms = r["duration_ms"]
+            if not isinstance(dms, int) or isinstance(dms, bool):
+                fails.append("[%s] results[%d].duration_ms=%r 不是整数" % (label, i, dms))
+                continue
+            if dms < delay - 2:
+                # 下界留 2ms 容忍：Python 的 asyncio.sleep 经 kqueue 毫秒取整，
+                # 实测 sleep(100ms) 可能只测到 99ms（其余四门用精确保眠会超过 delay）
+                fails.append("[%s] results[%d].duration_ms=%d 明显小于 delay=%d —— sleep 没睡够？"
+                             % (label, i, dms, delay))
+            if dms > delay + 1000:
+                fails.append("[%s] results[%d].duration_ms=%d 远超 delay=%d —— 单位可能错了"
+                             % (label, i, dms, delay))
+            if dms > total + 5:
+                fails.append("[%s] results[%d].duration_ms=%d > total_time_ms=%d —— 单项超过总时长"
+                             % (label, i, dms, total))
+
+    return assert_fn
+
+
+def _p02_dual_assert(port, n, delay, conc):
+    """并发双请求：两个 /run 同时在途，验证共享状态（结果切片/线程池/信号量）无污染。"""
+    body = {"task_count": n, "task_delay_ms": delay, "concurrency": conc}
+    check = _p02_check_run(n, delay, conc)
+
+    def assert_fn(status, headers, resp_body, fails, label):
+        outcomes = [None, None]
+
+        def worker(i):
+            try:
+                outcomes[i] = http_req(port, "POST", "/run", body)
+            except Exception as e:
+                # 用 dict 包装而不是 tuple：http_req 的正常返回值也是 tuple，
+                # 曾经用 ("exc", repr(e)) 作标记，把每次成功响应都误判成"请求异常"
+                outcomes[i] = {"exc": repr(e)}
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        for i, o in enumerate(outcomes):
+            if isinstance(o, dict) and "exc" in o:
+                fails.append("[%s#%d] 请求异常: %s" % (label, i, o["exc"]))
+                continue
+            check(o[0], o[1], o[2], fails, "%s#%d" % (label, i))
+        # 主线程这一发同样按契约校验（三次采样互相独立）
+        check(status, headers, resp_body, fails, label)
+
+    return assert_fn
+
+
+CASES_02 = [
+    {"name": "标准并发（10 任务/5 并发/50ms）", "method": "POST", "path": "/run",
+     "body": {"task_count": P02_STD[0], "task_delay_ms": P02_STD[1], "concurrency": P02_STD[2]},
+     "status": 200, "assert": _p02_check_run(*P02_STD)},
+    {"name": "并发数大于任务数（min 语义）", "method": "POST", "path": "/run",
+     "body": {"task_count": P02_WIDE[0], "task_delay_ms": P02_WIDE[1], "concurrency": P02_WIDE[2]},
+     "status": 200, "assert": _p02_check_run(*P02_WIDE)},
+    {"name": "零延迟任务", "method": "POST", "path": "/run",
+     "body": {"task_count": P02_ZERO[0], "task_delay_ms": P02_ZERO[1], "concurrency": P02_ZERO[2]},
+     "status": 200, "assert": _p02_check_run(*P02_ZERO)},
+    {"name": "字段缺省走默认值 100/100/10", "method": "POST", "path": "/run", "body": {},
+     "status": 200, "assert": _p02_check_run(100, 100, 10)},
+    {"name": "非法值 task_count=0 → 400", "method": "POST", "path": "/run",
+     "body": {"task_count": 0, "task_delay_ms": 10, "concurrency": 2}, "status": 400},
+    {"name": "非法值 concurrency=0 → 400", "method": "POST", "path": "/run",
+     "body": {"task_count": 4, "task_delay_ms": 10, "concurrency": 0}, "status": 400},
+    {"name": "非法值 task_delay_ms=-1 → 400", "method": "POST", "path": "/run",
+     "body": {"task_count": 4, "task_delay_ms": -1, "concurrency": 2}, "status": 400},
+    {"name": "非整数 task_count → 400", "method": "POST", "path": "/run",
+     "body": {"task_count": "abc", "task_delay_ms": 10, "concurrency": 2}, "status": 400},
+    {"name": "畸形 JSON body → 400", "method": "POST", "path": "/run",
+     "body": "{not-json", "status": 400},
+    {"name": "空 body → 400", "method": "POST", "path": "/run", "body": None, "status": 400},
+    {"name": "方法不允许 GET /run → 405", "method": "GET", "path": "/run", "status": 405},
+]
+
+
+def verify_02(lang, port, d, log):
+    cases = list(CASES_02)
+    cases.append({"name": "并发双请求无串扰", "method": "POST", "path": "/run",
+                  "body": {"task_count": P02_DUAL[0], "task_delay_ms": P02_DUAL[1],
+                           "concurrency": P02_DUAL[2]},
+                  "status": 200, "assert": _p02_dual_assert(port, *P02_DUAL)})
+    return verify_cases(lang, port, d, log, cases)
+
+
+# ================= 场景 04：文件读写 & 目录遍历 =================
+# 统一契约（README「统一 API 契约」的显式化 + 抹平后的边界行为）：
+#   POST /file/write {path, content, append?} → 200
+#       {"success":true,"path":<回显>,"bytes_written":<UTF-8 字节数>,"append":<回显>}
+#       content 为字符串 → 原样写入；为其他类型 → 规范 JSON
+#       （紧凑分隔符、非 ASCII 不转义、HTML 字符不转义；五门语言逐字节一致）
+#       写失败 → 200 + {"success":false,"error":...}（不回 5xx）
+#   GET /file/read?path= → {"path","content","bytes"}；文件不存在 404，是目录 400，
+#       path 缺失/空串 400
+#   GET /file/scan?dir=&recursive= → {"dir","recursive","files","total_bytes"}；
+#       recursive 缺省 true、仅字面 "false" 为 false；目录不存在 404，是文件 400，
+#       dir 缺失/空串 400；只统计常规文件
+#   方法不匹配 → 405（fastify 默认给 404，实现侧已抹平）；未匹配路径 → 404
+#   除状态码/字段外，"声称的字节数"必须与本地独立读磁盘的结果一致（声称值与真实值分开验）
+P04_STR = "世界 <b> & 'x'\n第二行"                     # 含非 ASCII / HTML 字符 / 换行
+P04_OBJ = {"cn": "世界", "html": "<b> & 'x'", "n": 42}  # 键按字母序 → 五门语言序列化逐字节一致
+P04_OBJ_CANON = json.dumps(P04_OBJ, ensure_ascii=False, separators=(",", ":"))
+P04_A, P04_C, P04_B = "aaaaaaaaaa", "字节字节", "bbbbb"  # scan 夹具：顶层两个 + 子目录一个
+
+
+def _p04_local_bytes(path):
+    """本地独立 oracle：直接读磁盘，与接口"声称的字节数"分开验。"""
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
+def _p04_write_assert(path, content_str, append=False, full_content=None):
+    """写接口断言：响应四个字段 + 声称字节数与磁盘真实内容双验。"""
+    want_bytes = len(content_str.encode("utf-8"))
+    disk_want = (full_content if full_content is not None else content_str).encode("utf-8")
+
+    def assert_fn(status, headers, body, fails, label):
+        if not isinstance(body, dict):
+            fails.append("[%s] 响应不是 JSON 对象: %r" % (label, body))
+            return
+        if set(body) != {"success", "path", "bytes_written", "append"}:
+            fails.append("[%s] 键集合不一致: %s" % (label, sorted(body)))
+        if body.get("success") is not True:
+            fails.append("[%s] success=%r（期望 true）" % (label, body.get("success")))
+        if body.get("append") is not append:
+            fails.append("[%s] append=%r（期望 %r）" % (label, body.get("append"), append))
+        if body.get("path") != path:
+            fails.append("[%s] path 回显不一致: %r" % (label, body.get("path")))
+        if body.get("bytes_written") != want_bytes:
+            fails.append("[%s] bytes_written=%r（期望本次写入 %d 字节）"
+                         % (label, body.get("bytes_written"), want_bytes))
+        try:
+            actual = _p04_local_bytes(path)
+        except Exception as e:
+            fails.append("[%s] 本地读不到刚写的文件 %s: %r" % (label, path, e))
+            return
+        if len(actual) != len(disk_want):
+            fails.append("[%s] 磁盘文件大小 %d 与期望 %d 不一致（声称值与真实值分裂）"
+                         % (label, len(actual), len(disk_want)))
+        if actual != disk_want:
+            fails.append("[%s] 磁盘文件内容与期望不一致（序列化形式漂移？）" % label)
+
+    return assert_fn
+
+
+def _p04_read_assert(path, content_str):
+    """读接口断言：content 原样回显 + bytes 为 UTF-8 字节数。"""
+    want_bytes = len(content_str.encode("utf-8"))
+
+    def assert_fn(status, headers, body, fails, label):
+        if not isinstance(body, dict):
+            fails.append("[%s] 响应不是 JSON 对象: %r" % (label, body))
+            return
+        if set(body) != {"path", "content", "bytes"}:
+            fails.append("[%s] 键集合不一致: %s" % (label, sorted(body)))
+        if body.get("path") != path:
+            fails.append("[%s] path 回显不一致: %r" % (label, body.get("path")))
+        if body.get("content") != content_str:
+            fails.append("[%s] content 与写入内容不一致: %r" % (label, body.get("content")))
+        if body.get("bytes") != want_bytes:
+            fails.append("[%s] bytes=%r（期望 UTF-8 字节数 %d，不是字符数）"
+                         % (label, body.get("bytes"), want_bytes))
+
+    return assert_fn
+
+
+def _p04_scan_assert(dir_path, recursive):
+    """扫描断言：files/total_bytes 与本地独立遍历磁盘的 oracle 比对。"""
+
+    def assert_fn(status, headers, body, fails, label):
+        if not isinstance(body, dict):
+            fails.append("[%s] 响应不是 JSON 对象: %r" % (label, body))
+            return
+        if set(body) != {"dir", "recursive", "files", "total_bytes"}:
+            fails.append("[%s] 键集合不一致: %s" % (label, sorted(body)))
+        if body.get("dir") != dir_path:
+            fails.append("[%s] dir 回显不一致: %r" % (label, body.get("dir")))
+        if body.get("recursive") is not recursive:
+            fails.append("[%s] recursive=%r（期望 %r）" % (label, body.get("recursive"), recursive))
+        want_files, want_bytes = 0, 0
+        if recursive:
+            for root, _dirs, files in os.walk(dir_path):
+                for fn in files:
+                    fp = os.path.join(root, fn)
+                    if os.path.isfile(fp):
+                        want_files += 1
+                        want_bytes += os.path.getsize(fp)
+        else:
+            try:
+                entries = os.listdir(dir_path)
+            except OSError as e:
+                fails.append("[%s] oracle 无法列举目录 %s: %r（前置写夹具应已创建它）"
+                             % (label, dir_path, e))
+                return
+            for fn in entries:
+                fp = os.path.join(dir_path, fn)
+                if os.path.isfile(fp):
+                    want_files += 1
+                    want_bytes += os.path.getsize(fp)
+        if body.get("files") != want_files:
+            fails.append("[%s] files=%r（oracle %d）" % (label, body.get("files"), want_files))
+        if body.get("total_bytes") != want_bytes:
+            fails.append("[%s] total_bytes=%r（oracle %d）"
+                         % (label, body.get("total_bytes"), want_bytes))
+
+    return assert_fn
+
+
+def _p04_write_fail_assert():
+    def assert_fn(status, headers, body, fails, label):
+        if status != 200:
+            fails.append("[%s] HTTP %d（期望 200：写失败用 success:false 表达，不回 5xx）"
+                         % (label, status))
+        if not isinstance(body, dict):
+            fails.append("[%s] 响应不是 JSON 对象: %r" % (label, body))
+        elif body.get("success") is not False:
+            fails.append("[%s] success=%r（期望 false）" % (label, body.get("success")))
+        elif "error" not in body:
+            fails.append("[%s] 缺少 error 详情字段" % label)
+
+    return assert_fn
+
+
+def _p04_deep_assert(path):
+    def assert_fn(status, headers, body, fails, label):
+        if not isinstance(body, dict) or body.get("success") is not True:
+            fails.append("[%s] success=%r（期望 true）"
+                         % (label, body.get("success") if isinstance(body, dict) else body))
+        if not os.path.exists(path):
+            fails.append("[%s] 深层目录/文件未被创建: %s" % (label, path))
+
+    return assert_fn
+
+
+def _p04_cases(tmp):
+    """按临时夹具目录生成用例列表（路径带查询参数时做 URL 编码）。"""
+    from urllib.parse import quote
+    q = quote
+    f_str, f_obj = os.path.join(tmp, "s.txt"), os.path.join(tmp, "o.json")
+    f_app, f_deep = os.path.join(tmp, "app.txt"), os.path.join(tmp, "deep", "a", "b", "c.txt")
+    scan_dir = os.path.join(tmp, "scan")
+    f_a, f_c, f_b = (os.path.join(scan_dir, "a.txt"), os.path.join(scan_dir, "c.bin"),
+                     os.path.join(scan_dir, "sub", "b.txt"))
+    f_empty = os.path.join(tmp, "empty")
+    f_block, f_block_child = os.path.join(tmp, "blocker"), os.path.join(tmp, "blocker", "child.json")
+    os.makedirs(f_empty, exist_ok=True)  # 空目录夹具（验证器侧创建，不走接口）
+
+    return [
+        # ---- 写 + 本地磁盘双验 ----
+        {"name": "写字符串内容（含非 ASCII/HTML/换行）", "method": "POST", "path": "/file/write",
+         "body": {"path": f_str, "content": P04_STR, "append": False}, "status": 200,
+         "assert": _p04_write_assert(f_str, P04_STR)},
+        {"name": "读回字符串内容", "method": "GET", "path": "/file/read?path=" + q(f_str),
+         "status": 200, "assert": _p04_read_assert(f_str, P04_STR)},
+        {"name": "写对象内容（规范 JSON）", "method": "POST", "path": "/file/write",
+         "body": {"path": f_obj, "content": P04_OBJ, "append": False}, "status": 200,
+         "assert": _p04_write_assert(f_obj, P04_OBJ_CANON)},
+        {"name": "读回对象内容", "method": "GET", "path": "/file/read?path=" + q(f_obj),
+         "status": 200, "assert": _p04_read_assert(f_obj, P04_OBJ_CANON)},
+        # ---- 覆盖 + 追加 ----
+        {"name": "覆盖写 AB", "method": "POST", "path": "/file/write",
+         "body": {"path": f_app, "content": "AB", "append": False}, "status": 200,
+         "assert": _p04_write_assert(f_app, "AB")},
+        {"name": "追加 CD", "method": "POST", "path": "/file/write",
+         "body": {"path": f_app, "content": "CD", "append": True}, "status": 200,
+         "assert": _p04_write_assert(f_app, "CD", append=True, full_content="ABCD")},
+        {"name": "读回合并内容 ABCD", "method": "GET", "path": "/file/read?path=" + q(f_app),
+         "status": 200, "assert": _p04_read_assert(f_app, "ABCD")},
+        # ---- 深层目录自动创建 ----
+        {"name": "深层目录自动创建", "method": "POST", "path": "/file/write",
+         "body": {"path": f_deep, "content": "deep", "append": False}, "status": 200,
+         "assert": _p04_deep_assert(f_deep)},
+        # ---- scan 夹具（经接口写入，父目录由服务端创建）----
+        {"name": "夹具写入 a.txt", "method": "POST", "path": "/file/write",
+         "body": {"path": f_a, "content": P04_A}, "status": 200,
+         "assert": _p04_write_assert(f_a, P04_A)},
+        {"name": "夹具写入 c.bin", "method": "POST", "path": "/file/write",
+         "body": {"path": f_c, "content": P04_C}, "status": 200,
+         "assert": _p04_write_assert(f_c, P04_C)},
+        {"name": "夹具写入 sub/b.txt", "method": "POST", "path": "/file/write",
+         "body": {"path": f_b, "content": P04_B}, "status": 200,
+         "assert": _p04_write_assert(f_b, P04_B)},
+        # ---- 目录遍历（oracle = 本地独立遍历）----
+        {"name": "递归扫描（3 文件/2 层）", "method": "GET",
+         "path": "/file/scan?dir=" + q(scan_dir), "status": 200,
+         "assert": _p04_scan_assert(scan_dir, True)},
+        {"name": "非递归扫描（只数一层）", "method": "GET",
+         "path": "/file/scan?dir=" + q(scan_dir) + "&recursive=false", "status": 200,
+         "assert": _p04_scan_assert(scan_dir, False)},
+        {"name": "空目录扫描", "method": "GET", "path": "/file/scan?dir=" + q(f_empty),
+         "status": 200, "assert": _p04_scan_assert(f_empty, True)},
+        # ---- 错误分支 ----
+        {"name": "读不存在文件 → 404", "method": "GET",
+         "path": "/file/read?path=" + q(os.path.join(tmp, "nope.txt")), "status": 404},
+        {"name": "读目录 → 400", "method": "GET", "path": "/file/read?path=" + q(scan_dir),
+         "status": 400},
+        {"name": "扫描不存在目录 → 404", "method": "GET",
+         "path": "/file/scan?dir=" + q(os.path.join(tmp, "no-dir")), "status": 404},
+        {"name": "扫描一个文件 → 400", "method": "GET", "path": "/file/scan?dir=" + q(f_str),
+         "status": 400},
+        {"name": "写失败：父路径是文件", "method": "POST", "path": "/file/write",
+         "body": {"path": f_block, "content": "x"}, "status": 200,
+         "assert": _p04_write_assert(f_block, "x")},
+        {"name": "写失败 → 200 + success:false", "method": "POST", "path": "/file/write",
+         "body": {"path": f_block_child, "content": "y"}, "status": 200,
+         "assert": _p04_write_fail_assert()},
+        # ---- 参数与方法边界 ----
+        {"name": "read 缺失 path 参数 → 400", "method": "GET", "path": "/file/read", "status": 400},
+        {"name": "read 空 path 参数 → 400", "method": "GET", "path": "/file/read?path=", "status": 400},
+        {"name": "scan 缺失 dir 参数 → 400", "method": "GET", "path": "/file/scan", "status": 400},
+        {"name": "scan 空 dir 参数 → 400", "method": "GET", "path": "/file/scan?dir=", "status": 400},
+        {"name": "POST /file/read → 405", "method": "POST", "path": "/file/read", "status": 405},
+        {"name": "GET /file/write → 405", "method": "GET", "path": "/file/write", "status": 405},
+        {"name": "POST /file/scan → 405", "method": "POST", "path": "/file/scan", "status": 405},
+        {"name": "未匹配路径 → 404", "method": "GET", "path": "/file/nope", "status": 404},
+    ]
+
+
+def verify_04(lang, port, d, log):
+    tmp = tempfile.mkdtemp(prefix="wb-verify-04-")
+    try:
+        return verify_cases(lang, port, d, log, _p04_cases(tmp))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 # kind == "contract" 的场景注册表。SCENARIOS 定义在文件顶部，这里用名字查表
 # （而不是在 SCENARIOS 里直接引用函数）以避免前向引用。
 CONTRACT_VERIFIERS = {
     "00-hello-http": verify_00,
     "01-json-serialize": verify_01,
+    "02-concurrent-task": verify_02,
+    "04-file-io": verify_04,
 }
 
 

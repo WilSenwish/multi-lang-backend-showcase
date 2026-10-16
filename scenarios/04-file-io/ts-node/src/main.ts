@@ -12,7 +12,8 @@
  * - Node fs/promises 是 async/await 风格，和 TS async 无缝配合
  * - 递归遍历需要自己写或用第三方库（Node 原生没有 walk）
  */
-import Fastify from 'fastify';
+import Fastify, { FastifyReply } from 'fastify';
+import { Dirent } from 'fs';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
@@ -35,7 +36,8 @@ async function walkDir(dirPath: string): Promise<{ files: number; totalBytes: nu
   let totalBytes = 0;
 
   async function walk(cur: string) {
-    let entries: fs.Dirent[];
+    // Dirent 来自 'fs'（'fs/promises' 不导出该类型，曾经写 fs.Dirent 直接 TS2694）
+    let entries: Dirent[];
     try {
       entries = await fs.readdir(cur, { withFileTypes: true });
     } catch {
@@ -63,9 +65,24 @@ async function walkDir(dirPath: string): Promise<{ files: number; totalBytes: nu
 
 const fastify = Fastify({ logger: true });
 
+/** 统一契约：方法不匹配 → 405（fastify 默认对未匹配方法返回 404，这里显式抹平） */
+function methodNotAllowed(reply: FastifyReply, expect: string) {
+  reply.code(405);
+  return { error: `method not allowed, expected ${expect}` };
+}
+
+/** 统一契约：必填 query 参数缺失或为空串 → 400 */
+function missingParam(reply: FastifyReply, name: string) {
+  reply.code(400);
+  return { error: `missing ${name} param` };
+}
+
 // POST /file/write
-fastify.post<{ Body: WriteBody }>('/file/write', async (request, reply) => {
-  const { path: filePath, content, append = false } = request.body;
+fastify.all('/file/write', async (request, reply) => {
+  if (request.method !== 'POST') {
+    return methodNotAllowed(reply, 'POST');
+  }
+  const { path: filePath, content, append = false } = request.body as WriteBody;
 
   try {
     // 确保父目录存在
@@ -94,8 +111,14 @@ fastify.post<{ Body: WriteBody }>('/file/write', async (request, reply) => {
 });
 
 // GET /file/read
-fastify.get('/file/read', async (request, reply) => {
-  const { path: filePath } = request.query as { path: string };
+fastify.all('/file/read', async (request, reply) => {
+  if (request.method !== 'GET') {
+    return methodNotAllowed(reply, 'GET');
+  }
+  const { path: filePath } = request.query as { path?: string };
+  if (!filePath) {
+    return missingParam(reply, 'path');
+  }
 
   try {
     const stat = await fs.stat(filePath);
@@ -121,8 +144,14 @@ fastify.get('/file/read', async (request, reply) => {
 });
 
 // GET /file/scan
-fastify.get('/file/scan', async (request, reply) => {
-  const { dir, recursive = 'true' } = request.query as { dir: string; recursive?: string };
+fastify.all('/file/scan', async (request, reply) => {
+  if (request.method !== 'GET') {
+    return methodNotAllowed(reply, 'GET');
+  }
+  const { dir, recursive = 'true' } = request.query as { dir?: string; recursive?: string };
+  if (!dir) {
+    return missingParam(reply, 'dir');
+  }
   const isRecursive = recursive !== 'false';
 
   try {

@@ -39,11 +39,13 @@ def write_file(req: WriteRequest) -> dict:
         # 确保父目录存在
         p.parent.mkdir(parents=True, exist_ok=True)
 
-        # 把 content 转成字符串
+        # 把 content 转成字符串：
+        # - 字符串 → 原样写入
+        # - 其他类型 → 规范 JSON（紧凑分隔符、非 ASCII 不转义；与 Go/Rust/TS/Java 逐字节一致）
         if isinstance(req.content, str):
             content = req.content
         else:
-            content = json.dumps(req.content, ensure_ascii=False)
+            content = json.dumps(req.content, ensure_ascii=False, separators=(",", ":"))
 
         if req.append:
             with open(p, "a", encoding="utf-8") as f:
@@ -62,8 +64,11 @@ def write_file(req: WriteRequest) -> dict:
 
 
 @app.get("/file/read")
-def read_file(path: str) -> dict:
+def read_file(path: Optional[str] = None) -> dict:
     """GET /file/read — 读文件"""
+    # 统一契约：path 缺失或为空串 → 400（FastAPI 默认缺失必填参数给 422，显式抹平）
+    if not path:
+        raise HTTPException(status_code=400, detail="missing path param")
     p = Path(path)
     if not p.exists():
         raise HTTPException(status_code=404, detail=f"文件不存在: {path}")
@@ -79,8 +84,11 @@ def read_file(path: str) -> dict:
 
 
 @app.get("/file/scan")
-def scan_dir(dir: str, recursive: bool = True) -> dict:
+def scan_dir(dir: Optional[str] = None, recursive: bool = True) -> dict:
     """GET /file/scan — 目录遍历"""
+    # 统一契约：dir 缺失或为空串 → 400
+    if not dir:
+        raise HTTPException(status_code=400, detail="missing dir param")
     start = Path(dir)
     if not start.exists():
         raise HTTPException(status_code=404, detail=f"目录不存在: {dir}")

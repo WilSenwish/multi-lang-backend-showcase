@@ -54,8 +54,13 @@ async fn write(State(_): State<()>, AxumJson(req): AxumJson<WriteReq>) -> Respon
     let path = Path::new(&req.path);
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
+            // 创建父目录失败不算 5xx：与其余四门一致，
+            // 统一用 200 + success:false 表达"这次写没成功"，错误详情放 body
             if let Err(e) = fs::create_dir_all(parent) {
-                return err_resp(format!("创建目录失败: {e}"));
+                return ok_resp(serde_json::json!({
+                    "success": false,
+                    "error": format!("创建目录失败: {e}")
+                }));
             }
         }
     }
@@ -84,11 +89,19 @@ async fn write(State(_): State<()>, AxumJson(req): AxumJson<WriteReq>) -> Respon
             "bytes_written": content.len(),
             "append": req.append,
         })),
-        Err(e) => err_resp(e.to_string()),
+        // 写失败 → 200 + success:false（曾经这里是 500，与其余四门不一致）
+        Err(e) => ok_resp(serde_json::json!({
+            "success": false,
+            "error": e.to_string()
+        })),
     }
 }
 
 async fn read(State(_): State<()>, Query(q): Query<ReadQuery>) -> Response {
+    // 统一契约：path 缺失/为空串 → 400
+    if q.path.is_empty() {
+        return (StatusCode::BAD_REQUEST, "missing path param").into_response();
+    }
     let path = Path::new(&q.path);
     if !path.exists() {
         return (StatusCode::NOT_FOUND, format!("文件不存在: {}", q.path)).into_response();
@@ -111,6 +124,10 @@ async fn read(State(_): State<()>, Query(q): Query<ReadQuery>) -> Response {
 }
 
 async fn scan(State(_): State<()>, Query(q): Query<ScanQuery>) -> Response {
+    // 统一契约：dir 缺失/为空串 → 400
+    if q.dir.is_empty() {
+        return (StatusCode::BAD_REQUEST, "missing dir param").into_response();
+    }
     let start = Path::new(&q.dir);
     if !start.exists() {
         return (StatusCode::NOT_FOUND, format!("目录不存在: {}", q.dir)).into_response();

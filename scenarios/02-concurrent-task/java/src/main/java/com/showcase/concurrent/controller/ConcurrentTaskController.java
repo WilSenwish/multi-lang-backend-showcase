@@ -3,7 +3,9 @@ package com.showcase.concurrent.controller;
 import com.showcase.concurrent.dto.RunRequest;
 import com.showcase.concurrent.dto.RunResponse;
 import com.showcase.concurrent.dto.TaskResult;
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -35,12 +37,24 @@ public class ConcurrentTaskController {
      */
     @PostMapping("/run")
     public RunResponse run(@RequestBody RunRequest req) {
+        // 统一契约：字段缺省走 DTO 默认值（100/100/10），显式传入非法值一律 400
+        // —— 与 Go/Python/Rust/TS 的校验行为对齐，不再静默夹取
+        if (req.getTaskCount() < 1) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "task_count must be >= 1");
+        }
+        if (req.getTaskDelayMs() < 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "task_delay_ms must be >= 0");
+        }
+        if (req.getConcurrency() < 1) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "concurrency must be >= 1");
+        }
+
         long startNs = System.nanoTime();
 
-        // 边界保护
-        int taskCount = Math.max(1, req.getTaskCount());
-        int delayMs = Math.max(0, req.getTaskDelayMs());
-        int concurrency = Math.max(1, Math.min(req.getConcurrency(), taskCount));
+        // 边界保护：并发数不超过任务数（这是契约行为，其余四门同样如此）
+        int taskCount = req.getTaskCount();
+        int delayMs = req.getTaskDelayMs();
+        int concurrency = Math.min(req.getConcurrency(), taskCount);
 
         // 创建固定大小线程池 — 这就是 Java 版的 "并发限流原语"
         // 同时最多 concurrency 个任务在执行，超出的任务在线程池队列里等待

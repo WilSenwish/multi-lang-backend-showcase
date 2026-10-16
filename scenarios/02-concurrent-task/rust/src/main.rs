@@ -13,7 +13,10 @@
 //! - Python asyncio / TS 事件循环是单线程伪并行
 
 use axum::{
+    body::Bytes,
     extract::State,
+    http::StatusCode,
+    response::{IntoResponse, Response},
     routing::post,
     Json, Router,
 };
@@ -25,34 +28,37 @@ use tokio::time::{sleep, Duration};
 #[derive(Deserialize)]
 struct RunRequest {
     #[serde(default = "default_task_count")]
-    task_count: u32,
-    #[serde(default)]
-    task_delay_ms: u64,
+    task_count: i64,
+    #[serde(default = "default_task_delay_ms")]
+    task_delay_ms: i64,
     #[serde(default = "default_concurrency")]
-    concurrency: u32,
+    concurrency: i64,
 }
 
-fn default_task_count() -> u32 {
+fn default_task_count() -> i64 {
     100
 }
-fn default_concurrency() -> u32 {
+fn default_task_delay_ms() -> i64 {
+    100
+}
+fn default_concurrency() -> i64 {
     10
 }
 
 #[derive(Serialize, Clone)]
 struct TaskResult {
-    id: u32,
+    id: i64,
     status: &'static str,
     duration_ms: u128,
 }
 
 #[derive(Serialize)]
 struct RunResponse {
-    total_tasks: u32,
-    concurrency: u32,
+    total_tasks: i64,
+    concurrency: i64,
     total_time_ms: u128,
     throughput: f64,
-    task_delay_ms: u64,
+    task_delay_ms: i64,
     results: Vec<TaskResult>,
 }
 
@@ -60,14 +66,34 @@ struct RunResponse {
 #[derive(Clone)]
 struct AppState;
 
-async fn run(
-    State(_): State<AppState>,
-    Json(req): Json<RunRequest>,
-) -> Json<RunResponse> {
-    // 边界保护
-    let task_count = req.task_count.max(1);
+/// 400 响应（统一契约：畸形 JSON / 类型错误 / 非法值都走这里）
+fn bad_request(msg: &str) -> Response {
+    (StatusCode::BAD_REQUEST, msg.to_string()).into_response()
+}
+
+async fn run(State(_): State<AppState>, body: Bytes) -> Response {
+    // 手动解析而非 axum 的 Json 提取器：后者对"语法错误"给 400、对"类型错误"给 422，
+    // 与其余四门语言不一致；这里统一映射为 400（契约：非法入参一律 400）。
+    let req: RunRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return bad_request(&format!("invalid request body: {e}")),
+    };
+
+    // 边界保护 → 契约：显式非法值一律 400，不再静默夹取
+    if req.task_count < 1 {
+        return bad_request("task_count must be >= 1");
+    }
+    if req.task_delay_ms < 0 {
+        return bad_request("task_delay_ms must be >= 0");
+    }
+    if req.concurrency < 1 {
+        return bad_request("concurrency must be >= 1");
+    }
+
+    let task_count = req.task_count;
     let delay_ms = req.task_delay_ms;
-    let concurrency = req.concurrency.max(1).min(task_count);
+    // 并发数不超过任务数（契约行为）
+    let concurrency = req.concurrency.min(task_count);
 
     let start = std::time::Instant::now();
 
@@ -84,7 +110,7 @@ async fn run(
             let _permit = sem_clone.acquire_owned().await.unwrap();
 
             let task_start = std::time::Instant::now();
-            sleep(Duration::from_millis(delay_ms)).await;
+            sleep(Duration::from_millis(delay_ms as u64)).await;
             let duration_ms = task_start.elapsed().as_millis();
 
             // _permit 离开作用域自动释放 — Rust 的 RAII
@@ -118,6 +144,7 @@ async fn run(
         task_delay_ms: delay_ms,
         results,
     })
+    .into_response()
 }
 
 #[tokio::main]

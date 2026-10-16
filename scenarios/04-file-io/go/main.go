@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // 场景 04：文件读写 & 目录遍历 — Go 实现
@@ -184,10 +187,10 @@ func scanHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, map[string]interface{}{
-		"dir":          dir,
-		"recursive":    recursive,
-		"files":        fileCount,
-		"total_bytes":  totalBytes,
+		"dir":         dir,
+		"recursive":   recursive,
+		"files":       fileCount,
+		"total_bytes": totalBytes,
 	})
 }
 
@@ -198,18 +201,31 @@ func contentToString(v interface{}) string {
 	case string:
 		return val
 	default:
-		b, err := json.Marshal(v)
-		if err != nil {
-			return val.(string)
+		// 规范 JSON：紧凑分隔符、非 ASCII 不转义、HTML 字符不转义
+		// （json.Marshal 默认把 < > & 转义成 \u003c，与其余四门不一致）
+		var buf bytes.Buffer
+		enc := json.NewEncoder(&buf)
+		enc.SetEscapeHTML(false)
+		if err := enc.Encode(val); err != nil {
+			return fmt.Sprintf("%v", val)
 		}
-		return string(b)
+		return strings.TrimRight(buf.String(), "\n")
 	}
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {
+	// 与 contentToString 同理：Encoder + SetEscapeHTML(false)，
+	// 否则读回的内容里 < > & 会变成 \u003c 等转义序列，五门语言对不上。
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(v)
+	w.Write(buf.Bytes())
 }
 
 // ==================== main ====================

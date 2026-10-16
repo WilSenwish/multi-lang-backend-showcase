@@ -162,8 +162,9 @@ Phase 6 专门补这一环。每个边界场景都必须写清楚**翻车方的�
 1. **验证强度加强计划（进行中，只 commit 不推远端）** —— 把 00~12 从"端口监听级"逐批升级到契约级，
    每批一个提交，批次划分与进度见 [VERIFICATION.md §12](VERIFICATION.md)。
    已完成批次 1（`00-hello-http` + `01-json-serialize`，10/10 全绿；顺带修掉 5 处跨语言偏差）。
-   下一批：`02-concurrent-task` + `04-file-io` —— 其中 02 已确认存在 Java camelCase 与
-   其余四门 snake_case 的**静默不一致**（VERIFICATION.md §11），升级断言时一并修复。
+   已完成批次 2（`02-concurrent-task` + `04-file-io`，10/10 全绿；修掉 12 处跨语言偏差，
+   含 02 的 Java camelCase 静默不一致与 04 的一个从未被触发的 Java NPE）。
+   下一批：`06-simple-rag-demo` + `07-structured-logging`。
 2. ~~**继续 Phase 6 剩余 1 个边界场景**（`17-error-handling`）。~~ ✅ 已完成（Phase 6 五个边界场景全部交付）
 3. 补充压测数据（`bench/http-bench.sh`）。
 4. 扩展 docs 专题深度（可参考本轮沉淀的 Python/uvicorn 优雅关闭踩坑，已写入 `docs/cloud-native-practice.md`）。

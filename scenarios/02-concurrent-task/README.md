@@ -54,6 +54,26 @@ Content-Type: application/json
 
 所有语言实现**业务逻辑完全一致**。
 
+### 契约要点（验证器 `kind=contract` 逐条断言）
+
+除上面的响应形状外，以下行为是**五门语言统一的显式契约**（`.wb_verify/verify_all.py` 的 `CASES_02`，12 个用例）：
+
+| 契约 | 说明 |
+|------|------|
+| 字段缺省 | `task_count` / `task_delay_ms` / `concurrency` 缺省时取 **100 / 100 / 10**（Go 用指针字段区分"缺省"与"显式传 0"） |
+| 非法入参 | `task_count<1`、`concurrency<1`、`task_delay_ms<0`、非整数、畸形 JSON、空 body —— 一律 **400**（不再静默夹取） |
+| `concurrency` 回显 | 响应里的 `concurrency` = `min(请求 concurrency, task_count)` |
+| `results` 保序 | `results[i].id` 严格等于 `i`（`0..n-1`），`status` 全为 `"ok"` |
+| `duration_ms` | 落在 `[delay-2, delay+1000]` 毫秒（下界留 2ms 容忍 asyncio 经 kqueue 的毫秒取整误差） |
+| `total_time_ms` | 落在 `[ceil(n/c)*delay*0.9, ceil(n/c)*delay*1.5+300]` —— **下界证明限流生效，上界证明没退化成串行** |
+| `throughput` | 与响应自身的 `total_time_ms` 自洽：`≈ task_count / (total_time_ms/1000)`（两位小数，容差 0.02） |
+| 方法限制 | 非 POST 访问 `/run` → **405** |
+| 并发安全 | 两个 `/run` 同时在途，各自结果完整正确（无共享状态污染） |
+
+> 键名全部为 snake_case。Java 侧通过 `spring.jackson.property-naming-strategy=SNAKE_CASE`
+> 统一（该策略同时作用于请求反序列化 —— 在此之前，README 示例里的 `{"task_count":100}`
+> 其实从未真正绑定到 Java 的 DTO，只是默认值碰巧蒙对）。
+
 ---
 
 ## 实现清单
