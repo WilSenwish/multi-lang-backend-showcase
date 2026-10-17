@@ -35,33 +35,47 @@ var (
 
 // ============ Handler ============
 
+func write429(w http.ResponseWriter, retryAfterMs int64) {
+	w.Header().Set("Content-Type", "application/json")
+	retryAfterSec := retryAfterMs / 1000
+	if retryAfterSec < 1 {
+		retryAfterSec = 1
+	}
+	w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfterSec))
+	w.WriteHeader(http.StatusTooManyRequests)
+
+	resp := map[string]interface{}{
+		"error":          "rate limit exceeded",
+		"retry_after_ms": retryAfterMs,
+		"total":          atomic.LoadInt64(&totalRequests),
+		"allowed":        atomic.LoadInt64(&allowedRequests),
+		"rejected":       atomic.LoadInt64(&rejectedRequests),
+	}
+	json.NewEncoder(w).Encode(resp)
+
+	log.Printf("[RateLimit] 429 被限流: retryAfter=%dms", retryAfterMs)
+}
+
 func heavyHandler(w http.ResponseWriter, r *http.Request) {
 	atomic.AddInt64(&totalRequests, 1)
 
-	if !limiter.Allow() {
+	// Reserve 一次：拿到令牌则 delay=0 放行；拿不到则立刻 Cancel 退还（不能白占一个未来令牌，
+	// 否则每拒绝一次都把"下一次可用时间"往后推，Retry-After 会从 1s 一路涨到 15s+）。
+	reservation := limiter.Reserve()
+	if !reservation.OK() {
 		atomic.AddInt64(&rejectedRequests, 1)
-
-		// 计算 Retry-After
-		reservation := limiter.Reserve()
-		retryAfterMs := reservation.Delay().Milliseconds()
+		write429(w, 1000)
+		return
+	}
+	delay := reservation.Delay()
+	if delay > 0 {
+		reservation.Cancel()
+		atomic.AddInt64(&rejectedRequests, 1)
+		retryAfterMs := delay.Milliseconds()
 		if retryAfterMs < 0 {
-			retryAfterMs = 1000 // 默认 1s
+			retryAfterMs = 1000
 		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfterMs/1000+1))
-		w.WriteHeader(http.StatusTooManyRequests)
-
-		resp := map[string]interface{}{
-			"error":          "rate limit exceeded",
-			"retry_after_ms": retryAfterMs,
-			"total":          atomic.LoadInt64(&totalRequests),
-			"allowed":        atomic.LoadInt64(&allowedRequests),
-			"rejected":       atomic.LoadInt64(&rejectedRequests),
-		}
-		json.NewEncoder(w).Encode(resp)
-
-		log.Printf("[RateLimit] 429 被限流: retryAfter=%dms", retryAfterMs)
+		write429(w, retryAfterMs)
 		return
 	}
 

@@ -54,7 +54,11 @@ const fastify = Fastify({ logger: true });
 
 // CREATE
 fastify.post('/users', async (request, reply) => {
-  const body = request.body as { name: string; email?: string | null; age?: number | null };
+  const body = request.body as { name?: string; email?: string | null; age?: number | null };
+  if (body == null || body.name == null) {
+    reply.code(400).send({ error: 'name is required' });
+    return;
+  }
 
   const stmt = db.prepare('INSERT INTO users (name, email, age) VALUES (?, ?, ?)');
   const info = stmt.run(body.name, body.email ?? null, body.age ?? null);
@@ -77,10 +81,15 @@ fastify.get('/users/:id', async (request, reply) => {
 });
 
 // LIST (分页)
-fastify.get('/users', async (request) => {
+fastify.get('/users', async (request, reply) => {
   const { page = 0, size = 10 } = request.query as { page?: string; size?: string };
   const pageNum = Number(page);
   const sizeNum = Number(size);
+
+  if (!Number.isInteger(pageNum) || !Number.isInteger(sizeNum) || pageNum < 0 || sizeNum <= 0) {
+    reply.code(400).send({ error: 'invalid pagination' });
+    return;
+  }
 
   const total = (db.prepare('SELECT COUNT(*) as count FROM users').get() as { count: number }).count;
   const items = db.prepare('SELECT * FROM users ORDER BY id ASC LIMIT ? OFFSET ?').all(sizeNum, pageNum * sizeNum);

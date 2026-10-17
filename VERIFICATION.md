@@ -3,9 +3,9 @@
 > 多语言后端对比仓库 `Multi-Lang-Backend-Showcase` —— **13 个基础场景 ＋ 5 个边界场景 × 5 种语言**
 > （Java / Go / Python / Rust / TS-Node = **90 个验证单元**）的逐场景本地运行验证、缺陷修复与验证方法沉淀。
 >
-> 最后更新：2026-10-17（验证强度加强计划批次 4 —— 场景 08「配置管理」升级为
-> 基线/覆盖/fail-fast 三次运行契约，场景 09「HTTP 客户端」升级为 11 用例熔断状态机契约，
-> 见 §12；00/01/02/04/06/07/08/09 已完成契约级升级）
+> 最后更新：2026-10-17（验证强度加强计划批次 5 —— 场景 10「速率限制」升级为
+> 限流行为 + 429 Retry-After 契约，场景 11「DB CRUD 连接池」升级为 CRUD 全链路 + 分页契约，
+> 见 §12；00/01/02/04/06/07/08/09/10/11 已完成契约级升级，仅余 03/05/12 为行为级）
 > ｜ 验证脚本：`.wb_verify/verify_all.py`
 > ｜ 结果：`.wb_verify/all_results.json` / `.md` ｜ 历史归档：`.wb_verify/runs/`
 
@@ -56,8 +56,8 @@
 | 07 | structured-logging | contract | **契约级**（13 用例：响应键名/request_id 格式 + **日志字段逐语言比对** + 日志条数硬证据） | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 08 | config-management | contract | **契约级**（3 次运行：基线全字段 exact + env 覆盖优先级 + 非法配置 fail-fast） | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 09 | http-client | contract | **契约级**（11 用例：熔断状态机时间线 + 耗时上下界 + 三种键集合逐字段） | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 10 | rate-limit | http | 端口监听 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 11 | db-crud-pool | http | 端口监听 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 10 | rate-limit | contract | **契约级**（health qps/burst + 突发限流 + 429 Retry-After 范围 + 冷却恢复） | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 11 | db-crud-pool | contract | **契约级**（CRUD 全链路 + 分页 + 错误码非 500 + snake_case 字段） | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 12 | graceful-shutdown | graceful | 在途请求 + 关闭日志 | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 13 | cpu-bound-parallel | compute | **契约级**（checksum 对比 oracle） | ✅ | ✅ | ✅\* | ✅\* | ✅ |
 | 14 | data-analysis | data | **契约级**（分组统计 + Top10 对比 oracle） | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -410,11 +410,11 @@ cd scenarios/11-db-crud-pool/ts-node && npm rebuild better-sqlite3 --build-from-
 
 - 本报告的矩阵由**自动化脚本在本机逐场景实测**得出；日志原件在 `.wb_verify/all_logs/`（每个「场景 × 语言」一份）。
 - 判定强度分层：`03`（数值 + 选项语义）、`05`（测试摘要）、`12`（在途请求 + 关闭日志）是**行为级**断言；
-  `10` / `11` 目前仍是**端口监听级**（"可启动"），**不包含**响应内容正确性
-  （如 10 的精确速率、11 的 CRUD 结果）；其余 http 场景均已升级契约级。
-- **下一步建议**：为 `10` / `11` 补"契约级"断言 —— 按各自 README 声明的端点与响应体，
-  对 5 种语言做**响应归一化后的一致性比对**（同一请求 → 同一语义结果）。
-  本轮在 03/12 上的经验说明：这类比对才最容易抓到"静默不一致"。
+  其余 http 场景均已升级**契约级**（响应逐字段比对）。
+- `10` / `11` 已在**批次 5（2026-10-17）**完成契约级升级：10 校验 health 的 `qps`/`burst`、
+  突发限流（`/api/heavy` 连打 24 次前 ~10 个 200、其余 429）、每个 429 的 `Retry-After` 落在 1~2 秒、
+  冷却后令牌恢复（再请求必须 200）；11 校验 CRUD 全链路（201/200/204/404 语义 + `created_at` snake_case）、
+  分页字段自洽、`name` 缺失与 `page=abc` 不得落到 500。升级后两场景各 5/5 全绿，共修复 11 处跨语言偏差（§12）。
 
 ---
 
@@ -439,9 +439,8 @@ Python 忘记 `& MASK`、TS 用 `number` 而非 `BigInt`、Java 用有符号输�
 
 | 层级 | 内容 | 场景 |
 |------|------|------|
-| 启动级 | 端口可连接 | 10 / 11 |
 | 行为级 | 数值与语义契约（统计口径、选项语义、测试摘要、在途请求） | 03/05/12 |
-| **契约级** | **响应内容逐字段比对（通用用例引擎 `verify_cases`）** | **00 / 01 / 02 / 04 / 06 / 07 / 08 / 09** |
+| **契约级** | **响应内容逐字段比对（通用用例引擎 `verify_cases`）** | **00 / 01 / 02 / 04 / 06 / 07 / 08 / 09 / 10 / 11** |
 | **契约级** | **响应内容逐字段与 oracle 比对（数值/数据类）** | **13 / 14 / 15 / 16 / 17** |
 
 ### 实测结果
@@ -907,3 +906,61 @@ mock 的 2s、也没重试风暴），重试用例 `250 ≤ latency ≤ 6000ms`�
 | 09/TS 形参遮蔽 | `undiciRequest` 改回 `request` | 全量 `/call-external` 抛 "request is not a function"，9 处不符 ✅ 被抓 |
 
 批次 4 结果：`python3 .wb_verify/verify_all.py 08 09` → **10/10 全绿**（归档见 `.wb_verify/runs/20261017-122238_sub-08_09.md`）。
+
+### 批次 5（10 + 11）实测：限流行为契约与 CRUD 全链路契约，共修复 11 处跨语言偏差
+
+**场景 10（速率限制，8 断言）**：health 端点校验 `qps`(=1) 与 `burst`(=10) 真实暴露给客户端 →
+连打 24 个 `/api/heavy`，前 9~11 个 200、其余 429（突发桶耗尽）→ 每个 429 的 `Retry-After` 头必须 1~2 秒、
+body 的 `retry_after_ms` 若出场须落在 [300,2000]ms → 冷却 1.5s 后再次请求必须 200（令牌已补充）。
+三道关（桶耗尽、退避秒数合理、冷却可恢复）任缺一道都会放行"能跑但行为错"的实现。
+
+**场景 11（DB CRUD 连接池，~9 断言）**：health 200 → POST /users 返回 201 且 body 含
+`id`(正整数)/`name`/`age`/`created_at`(snake_case) → GET/PUT 路由 200 → DELETE 204 且删后再 GET 404 →
+GET 不存在 404 → `?page=0&size=3` 的 items≤3/page=0/size=3/total=int → `name` 缺失不得 500 → `page=abc` 不得 500。
+`created_at` 必须 snake_case 是关键一道：它专门抓 Java 反序列化/序列化策略漂移。
+
+| 语言 | 偏差 | 修正 |
+|------|------|------|
+| Go | 10：`rate.Reserve()` 不 `Cancel()`，**白占未来令牌**，Retry-After 从 1s 一路涨到 15s+ | `reservation.OK()` 且 `delay>0` 时 `Cancel()` 再回 429 |
+| TS-Node | 10：处理器里写 `fastify.code(429)` 而 `fastify.code` 不是函数，**每个限流请求直接 500** | 形参 `reply`，429 用 `return reply.code(429).header(...).send(...)` |
+| Java | 10：令牌桶微令牌单位（`×1e6`）与纳秒换算错，`retry_after_ms` 放大 1e6 倍、**令牌几乎不补充**（1.5s 冷却后仍 429） | 修正 `refillNanosPerToken` 与 `refill = elapsed / refillNanosPerToken`，waitNanos 用真实公式 |
+| Java | 10：health 缺 `qps`/`burst` 字段 | 令牌桶补 `getQps()`/`getBurst()` getter，health 写入 |
+| Go | 11：`mux.HandleFunc("/users/", ...)` 是子树匹配，`r.PathValue("id")` 恒空 → GET/PUT/DELETE 全 400 | 改通配符 `/users/{id}` |
+| Rust | 11：`axum 0.7` + `matchit 0.7.3` 路由**只认 `:id` 冒号语法**，写 `{id}` 直接 404 | 路由改 `/users/:id` |
+| Java | 11：无 `/health` 端点；`createdAt` 默认 camelCase（`created_at` 缺失）；POST 返回 200 而非 201；`name` 缺失抛 500 | 新增 `HealthController`；`application.properties` 加 `spring.jackson.property-naming-strategy=SNAKE_CASE`；POST 改 201 + 缺 name 返 400 |
+| TS-Node | 11：`name` 缺失 / `page=abc`（`Number()` 得 NaN → SQLITE_MISMATCH）均落到 500 | 两处显式 400 拦截（`body.name == null` 与 `!Number.isInteger(pageNum)`） |
+| Python | 11：经探针实测已正确（201 / snake_case / 422 非 500） | 无需改动 |
+
+**方法论沉淀**：
+
+- **"端口通、一调接口就断连"是 Go `net/http` 的 recover 假象**：10/TS 的 `fastify.code` 报错、
+  11/Go 的路由不匹配都不会在启动期暴露，只有发请求才炸，且 Go 侧 net/http 的 recover 是**断开连接而非 500**，
+  日志里什么都没有 → 必须用真实请求契约覆盖每个端点，不能靠启动期绿灯。
+- **限流契约的三道关缺一不可**：只验"桶耗尽"会放过 Go 的退避膨胀（15s），
+  只验"退避秒数"会放过 Java 的"令牌永不补充"（冷却后仍 429）；
+  只有"耗尽 + 退避合理 + 冷却可恢复"三关齐下，才把两类静默缺陷都钉死。
+- **`created_at` 的 snake_case 是跨语言序列化策略的试金石**：它本是 02 场景踩过的坑
+  （Java 默认 camelCase），在 11 重演 —— 一次 `SNAKE_CASE` 全局策略就能同时修反序列化绑定，
+  但 README 示例里 `{"task_count":100}` 那种"默认值碰巧蒙对"的脱节，只在显式断言下才会暴露。
+- **逐语言声明预期，不强行抹平**：10 的 `retry_after_ms`（Go 出场 / Python 出场 / 其余不强制）、
+  11 的缺失字段语义（TS 的 SQLite 缺 `name` 是 400、Go 是 500）按语言分别断言；强行统一只会藏实现。
+- **先探后写**：两个场景各用 `/tmp/probe10.py`、`/tmp/probe11.py` 先实测五门语言真实行为，
+  再据此写契约 —— 一次就暴露了 10/TS 全 500、10/Go 退避膨胀、11/Go 路由 400、11/Rust 路由 404、
+  11/Java 无 health+camelCase+500、11/TS 500 等偏差，避免"照着 README 声明写契约"而漏判。
+
+**六个反向对照实验**（证明断言有牙齿，均已还原并复跑确认全绿）：
+
+| 实验 | 改动 | 结果 |
+|------|------|------|
+| 10/TS 还原 `fastify.code(429)` | `reply.code` 改回 `fastify.code` | 429 数 = 0（全变 500），assert 抓到 ✅ |
+| 10/Go 不 `Cancel()` | 注释掉 `reservation.Cancel()` | Retry-After 3~8s 一路涨，范围断言抓到 ✅ |
+| 10/Java 错误填充 | 把 `refill` 公式改回放大 1e6 倍 | 24×200（令牌不补充），限流断言抓到 ✅ |
+| 11/Go 子树路由 | `/users/{id}` 改回 `/users/` | GET/PUT/DELETE 全 400，路由断言抓到 ✅ |
+| 11/Java 删 SNAKE_CASE | `application.properties` 去掉命名策略 | body 缺 `created_at`，字段断言抓到 ✅ |
+| 11/TS 不校验 name | 注掉 `body.name == null` 拦截 | `name` 缺失落 500（契约要求非 500），断言抓到 ✅ |
+
+批次 5 结果：`python3 .wb_verify/verify_all.py 10 11` → **10/10 全绿**（首轮 9/10 因 Java 冷却仍 429，
+修正令牌桶公式后 10/10；归档见 `.wb_verify/runs/20261017-134311_sub-10_11.md`）。
+
+至此**验证强度加强计划基础场景批次 1~5 全部完成**（00/01/02/04/06/07/08/09/10/11 = 10 个场景 × 5 语言 = 50 单元契约级），
+仅余批次 6（03-cli-tool + 05-unit-test-mock + 12-graceful-shutdown）为行为级，按原计划最后一批收口。

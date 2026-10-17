@@ -171,7 +171,12 @@ Phase 6 专门补这一环。每个边界场景都必须写清楚**翻车方的�
    含 09/TS 被形参遮蔽导致全量请求 100% 失败的 undici import、09/Java 抄进 `.properties` 的
    YAML 让 Resilience4j 配置全程丢失、08/Rust config crate 空分隔符让 env 覆盖静默失效；
    六个反向对照实验证明断言有牙齿）。
-   下一批：`10-rate-limit` + `11-db-crud-pool`。
+   已完成批次 5（`10-rate-limit` + `11-db-crud-pool`，10/10 全绿；修掉 11 处跨语言偏差，
+   含 10/TS 把 `fastify.code(429)` 当成函数导致限流请求全 500、10/Go 的 `Reserve()` 不 `Cancel()` 让
+   Retry-After 膨胀到 15s+、10/Java 令牌桶微令牌单位换算错导致令牌不补充、11/Go 子树路由 `/users/` 让带
+   id 请求全 400、11/Rust 的 `{id}` 不被 matchit 0.7.3 识别直接 404、11/Java 缺 `/health` + camelCase
+   `createdAt` + POST 返 200、11/TS 缺 name/page=abc 落到 500；六个反向对照实验证明断言有牙齿）。
+   下一批（最后一批）：`03-cli-tool` + `05-unit-test-mock` + `12-graceful-shutdown`（当前为行为级，按原计划收口）。
 2. ~~**继续 Phase 6 剩余 1 个边界场景**（`17-error-handling`）。~~ ✅ 已完成（Phase 6 五个边界场景全部交付）
 3. 补充压测数据（`bench/http-bench.sh`）。
 4. 扩展 docs 专题深度（可参考本轮沉淀的 Python/uvicorn 优雅关闭踩坑，已写入 `docs/cloud-native-practice.md`）。

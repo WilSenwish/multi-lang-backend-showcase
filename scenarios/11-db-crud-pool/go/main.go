@@ -197,7 +197,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/users", usersHandler)
-	mux.HandleFunc("/users/", userHandler)
+	mux.HandleFunc("/users/{id}", userHandler)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]string{"service": "db-crud-pool-go", "db": "sqlite"})
 	})

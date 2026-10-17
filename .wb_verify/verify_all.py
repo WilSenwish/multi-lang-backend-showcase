@@ -78,8 +78,8 @@ SCENARIOS = [
     {"name":"07-structured-logging","kind":"contract","ports":{"java":8105,"go":8106,"python":8107,"rust":8108,"ts-node":8109}},
     {"name":"08-config-management","kind":"contract","ports":{"java":8110,"go":8111,"python":8112,"rust":8113,"ts-node":8114}},
     {"name":"09-http-client","kind":"contract","ports":{"java":8115,"go":8116,"python":8117,"rust":8118,"ts-node":8119}},
-    {"name":"10-rate-limit","kind":"http","ports":{"java":8120,"go":8121,"python":8122,"rust":8123,"ts-node":8124}},
-    {"name":"11-db-crud-pool","kind":"http","ports":{"java":8125,"go":8126,"python":8127,"rust":8128,"ts-node":8129}},
+    {"name":"10-rate-limit","kind":"contract","ports":{"java":8120,"go":8121,"python":8122,"rust":8123,"ts-node":8124}},
+    {"name":"11-db-crud-pool","kind":"contract","ports":{"java":8125,"go":8126,"python":8127,"rust":8128,"ts-node":8129}},
     {"name":"12-graceful-shutdown","kind":"graceful","ports":{"java":8130,"go":8131,"python":8132,"rust":8133,"ts-node":8134}},
     # 13+ 为"边界场景"：CPU 密集 / 数据分析 / 结构化并发 / 大文件流式 / 错误处理
     {"name":"13-cpu-bound-parallel","kind":"compute","ports":{"java":8135,"go":8136,"python":8137,"rust":8138,"ts-node":8139}},
@@ -2366,6 +2366,216 @@ def verify_09(lang, port, d, log):
     return verify_cases(lang, port, d, log, cases)
 
 
+# ================= 场景 10：单机内存限流（令牌桶） =================
+# 契约（五语言一致的目标行为）：
+#   GET /health  → 200，响应含 qps(=1) 与 burst(=10)（Java 曾缺这两个键）
+#   GET /api/heavy 连打 24 个：前 burst 个 200，其后 429（证明限流真发生，不是全 200 也不是全 429）
+#   每个 429 必须带 Retry-After 头（1~2 秒），且若响应体含 retry_after_ms 则落在 [300,2000]ms
+#     —— 这条断言专门抓三类静默缺陷：TS 曾用 fastify.code（不是函数）→ 429 变 500；
+#        Go 的 Reserve() 不 Cancel → retry_after_ms 一路涨到 15s+；Java 公式错 → retry_after_ms 放大 1e6 倍
+#   冷却 ~1.5s 后再次请求 → 200（证明令牌会补充，限流非永久封死）
+P10_SPEC = {
+    "java":    {"service": "rate-limit-java"},
+    "go":      {"service": "rate-limit-go"},
+    "python":  {"service": "rate-limit-python"},
+    "rust":    {"service": "rate-limit-rust"},
+    "ts-node": {"service": "rate-limit-ts-node"},
+}
+
+def verify_10(lang, port, d, log):
+    sp = P10_SPEC[lang]
+    free_port(port)
+    with open(log, "a") as lf:
+        proc = subprocess.Popen(start_cmd(lang, port, "http", d), cwd=d, env=ENV,
+                                stdout=lf, stderr=subprocess.STDOUT, start_new_session=True)
+    try:
+        if not poll_listen(port, RUN_POLL):
+            return False, "no response on %d" % port + "\n" + tail(log)
+        fails = []
+
+        # 1) health：必须含 qps / burst
+        st, hd, bd = http_req(port, "GET", "/health")
+        if st != 200:
+            fails.append("health HTTP %d（期望 200）" % st)
+        elif not isinstance(bd, dict):
+            fails.append("health 响应非 JSON 对象")
+        else:
+            if bd.get("service") != sp["service"]:
+                fails.append("health service=%r（期望 %r）" % (bd.get("service"), sp["service"]))
+            if bd.get("burst") != 10:
+                fails.append("health burst=%r（期望 10）" % (bd.get("burst"),))
+            q = bd.get("qps")
+            if q not in (1, 1.0):
+                fails.append("health qps=%r（期望 1）" % (q,))
+
+        # 2) 连打 24 个 /api/heavy：burst=10 → 前 10 个 200，余下 429
+        codes, ra_secs, ra_ms = [], [], []
+        for _ in range(24):
+            st, hd, bd = http_req(port, "GET", "/api/heavy")
+            codes.append(st)
+            if st == 429:
+                ra = hd.get("retry-after")
+                try:
+                    ra_secs.append(int(ra))
+                except (TypeError, ValueError):
+                    ra_secs.append(None)
+                if isinstance(bd, dict) and isinstance(bd.get("retry_after_ms"), (int, float)):
+                    ra_ms.append(bd["retry_after_ms"])
+        n200 = codes.count(200)
+        n429 = codes.count(429)
+        if not (9 <= n200 <= 11):
+            fails.append("burst 中 200 数量=%d（期望 9~11，burst=10）" % n200)
+        if n429 != 24 - n200:
+            fails.append("burst 中 429 数量=%d（期望 %d）" % (n429, 24 - n200))
+        for i, s in enumerate(ra_secs):
+            if s is None or not (1 <= s <= 2):
+                fails.append("burst 第%d个 429 的 Retry-After=%r（期望 1~2 秒）" % (i + 1, s))
+        for m in ra_ms:
+            if not (300 <= m <= 2000):
+                fails.append("burst 某 429 的 retry_after_ms=%r（期望 300~2000ms，抓 Go/Java 放大 bug）" % (m,))
+
+        # 3) 冷却恢复：等约 1.5s（> 1 个令牌的补充周期）后，应又能通过
+        time.sleep(1.5)
+        st, hd, bd = http_req(port, "GET", "/api/heavy")
+        if st != 200:
+            fails.append("冷却 1.5s 后请求 HTTP %d（期望 200，令牌应已补充）" % st)
+
+        if fails:
+            return False, "；".join(fails[:6]) + ("……共 %d 处不符" % len(fails) if len(fails) > 6 else "")
+        return True, "health(qps/burst) + burst 限流 + 429 Retry-After + 冷却恢复 全部通过"
+    finally:
+        kill_tree(proc)
+        subprocess.run(["pkill", "-9", "-f", os.path.join("scenarios", os.path.basename(os.path.dirname(d)))],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(1)
+
+
+# ================= 场景 11：数据库 CRUD + 连接池 =================
+# 契约（五语言一致的目标行为，全部 SQLite 零依赖）：
+#   GET /health            → 200（Java 曾缺此端点）
+#   POST /users {name,age} → 201，body 含 id(正整数)/name/age/created_at(snake_case)
+#       —— created_at 用 snake_case 断言，专门抓 Java 的 camelCase（createdAt）静默不一致
+#   GET /users/{id}        → 200（Go 曾因 /users/ 子树路由 + PathValue 永远空 → 400；
+#        Rust 曾因 axum 0.7.3 只认 :id 不认 {id} → 404）
+#   PUT /users/{id} {name} → 200，name 被更新
+#   DELETE /users/{id}     → 204；删后再 GET → 404
+#   GET /users/{id} 不存在 → 404
+#   GET /users?page=0&size=3 → 200，items 数组长度 ≤3，page=0，size=3，total 为 int
+#   POST /users {}（缺 name）→ 不得 500（TS/Java 曾因 NOT NULL / 解析 → 500）
+#   GET /users?page=abc     → 不得 500（TS 曾 SQLITE_MISMATCH → 500）
+P11_SPEC = {
+    "java":    {"service": "db-crud-pool-java"},
+    "go":      {"service": "db-crud-pool-go"},
+    "python":  {"service": "db-crud-pool-python"},
+    "rust":    {"service": "db-crud-pool-rust"},
+    "ts-node": {"service": "db-crud-pool-ts-node"},
+}
+
+def verify_11(lang, port, d, log):
+    sp = P11_SPEC[lang]
+    free_port(port)
+    state = {}
+    with open(log, "a") as lf:
+        proc = subprocess.Popen(start_cmd(lang, port, "http", d), cwd=d, env=ENV,
+                                stdout=lf, stderr=subprocess.STDOUT, start_new_session=True)
+    try:
+        if not poll_listen(port, RUN_POLL):
+            return False, "no response on %d" % port + "\n" + tail(log)
+        fails = []
+
+        def is_obj(bd, label):
+            if not isinstance(bd, dict):
+                fails.append("%s 响应非 JSON 对象: %r" % (label, bd))
+                return False
+            return True
+
+        # 1) health
+        st, hd, bd = http_req(port, "GET", "/health")
+        if st != 200:
+            fails.append("health HTTP %d（期望 200）" % st)
+        elif not isinstance(bd, dict) or bd.get("service") != sp["service"]:
+            fails.append("health service 不符: %r" % (bd,))
+
+        # 2) create
+        st, hd, bd = http_req(port, "POST", "/users", {"name": "Alice", "age": 30})
+        if st != 201:
+            fails.append("POST /users HTTP %d（期望 201）" % st)
+        elif is_obj(bd, "POST /users"):
+            uid = bd.get("id")
+            if not isinstance(uid, int) or uid <= 0:
+                fails.append("POST /users id=%r（期望正整数）" % uid)
+            if bd.get("name") != "Alice":
+                fails.append("POST /users name=%r（期望 Alice）" % bd.get("name"))
+            if bd.get("age") != 30:
+                fails.append("POST /users age=%r（期望 30）" % bd.get("age"))
+            if "created_at" not in bd:
+                fails.append("POST /users 缺 created_at 键（Java camelCase 会漏）")
+            state["uid"] = uid
+
+        uid = state.get("uid")
+        if uid is not None:
+            # 3) read
+            st, hd, bd = http_req(port, "GET", "/users/%d" % uid)
+            if st != 200:
+                fails.append("GET /users/%s HTTP %d（期望 200）" % (uid, st))
+            elif is_obj(bd, "GET /users/%s" % uid) and bd.get("name") != "Alice":
+                fails.append("GET /users/%s name=%r（期望 Alice）" % (uid, bd.get("name")))
+            # 4) update
+            st, hd, bd = http_req(port, "PUT", "/users/%d" % uid, {"name": "Bob"})
+            if st != 200:
+                fails.append("PUT /users/%s HTTP %d（期望 200）" % (uid, st))
+            elif is_obj(bd, "PUT /users/%s" % uid) and bd.get("name") != "Bob":
+                fails.append("PUT /users/%s name=%r（期望 Bob）" % (uid, bd.get("name")))
+            # 5) delete
+            st, hd, bd = http_req(port, "DELETE", "/users/%d" % uid)
+            if st not in (200, 204):
+                fails.append("DELETE /users/%s HTTP %d（期望 200/204）" % (uid, st))
+            # 6) read after delete → 404
+            st, hd, bd = http_req(port, "GET", "/users/%d" % uid)
+            if st != 404:
+                fails.append("DELETE 后 GET /users/%s HTTP %d（期望 404）" % (uid, st))
+
+        # 7) read missing
+        st, hd, bd = http_req(port, "GET", "/users/999999")
+        if st != 404:
+            fails.append("GET /users/999999 HTTP %d（期望 404）" % st)
+
+        # 8) list pagination
+        st, hd, bd = http_req(port, "GET", "/users?page=0&size=3")
+        if st != 200:
+            fails.append("GET /users?page=0&size=3 HTTP %d（期望 200）" % st)
+        elif is_obj(bd, "list"):
+            items = bd.get("items")
+            if not isinstance(items, list):
+                fails.append("list items 非数组")
+            elif len(items) > 3:
+                fails.append("list items 长度=%d（size=3 应 ≤3）" % len(items))
+            if bd.get("page") != 0:
+                fails.append("list page=%r（期望 0）" % bd.get("page"))
+            if bd.get("size") != 3:
+                fails.append("list size=%r（期望 3）" % bd.get("size"))
+            if not isinstance(bd.get("total"), int):
+                fails.append("list total 非 int: %r" % bd.get("total"))
+
+        # 9) 缺 name → 不得 500
+        st, hd, bd = http_req(port, "POST", "/users", {})
+        if st == 500:
+            fails.append("POST {}（缺 name）HTTP 500（应 400/422 或非 500）")
+        # 10) page=abc → 不得 500
+        st, hd, bd = http_req(port, "GET", "/users?page=abc&size=3")
+        if st == 500:
+            fails.append("GET page=abc HTTP 500（应 400/422 或非 500）")
+
+        if fails:
+            return False, "；".join(fails[:6]) + ("……共 %d 处不符" % len(fails) if len(fails) > 6 else "")
+        return True, "CRUD 全链路 + 分页 + 错误码非 500 + snake_case 全部通过"
+    finally:
+        kill_tree(proc)
+        subprocess.run(["pkill", "-9", "-f", os.path.join("scenarios", os.path.basename(os.path.dirname(d)))],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(1)
+
+
 CONTRACT_VERIFIERS = {
     "00-hello-http": verify_00,
     "01-json-serialize": verify_01,
@@ -2375,6 +2585,8 @@ CONTRACT_VERIFIERS = {
     "07-structured-logging": verify_07,
     "08-config-management": verify_08,
     "09-http-client": verify_09,
+    "10-rate-limit": verify_10,
+    "11-db-crud-pool": verify_11,
 }
 
 

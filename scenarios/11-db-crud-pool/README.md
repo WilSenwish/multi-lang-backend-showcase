@@ -97,6 +97,28 @@ DELETE /users/{id}
 
 ---
 
+## 契约要点（验证强度加强计划批次 5）
+
+场景 11 已在批次 5（2026-10-17）从「端口监听级」升级为**契约级断言**（`verify_11`），
+`python3 .wb_verify/verify_all.py 11` → **5/5 全绿**。契约覆盖五道关：
+
+- **健康检查**：`/health` 必须 200 且返回 `{service, db}`（专门抓 Java 原先缺 `/health` 端点）。
+- **CRUD 全链路**：POST 返回 **201**（非 200）且 body 含 `id`（正整数）/ `name` / `age` / `created_at`；
+  GET/PUT 路由 200；DELETE 返回 **204** 且删后再 GET 该 id 必须 **404**；GET 不存在的 id 必须 404。
+- **`created_at` 必须 snake_case**：专门抓 Java Jackson 默认 camelCase（`createdAt`）的序列化漂移 ——
+  与场景 02 同款坑，靠 `spring.jackson.property-naming-strategy=SNAKE_CASE` 一次性修掉。
+- **分页自洽**：`GET /users?page=0&size=3` 的响应 `items` 长度 ≤ size、`page`/`size` 回显一致、`total` 为整数。
+- **错误码不得落到 500**：`name` 缺失必须返 400（不得 500）；`page=abc`（`Number()` 得 NaN）必须返 400（不得 500）。
+
+> ⚠️ **实现坑（已在批次 5 修复）**：
+> - **Go**：路由必须用通配符 `/users/{id}`，写 `/users/`（子树匹配）会让 `r.PathValue("id")` 恒为空、所有带 id 的请求 400。
+> - **Rust（axum 0.7 + matchit 0.7.3）**：路径参数**只认 `:id` 冒号语法**，写 `{id}` 直接 404。
+> - **Java**：缺 `/health` 端点、`createdAt` 默认 camelCase、POST 返回 200 而非 201、`name` 缺失抛 500 —— 四处一并修。
+> - **TS(Node)**：`better-sqlite3` 在 `name` 缺失时 INSERT 抛错、`page=abc` 时 `Number()` 得 NaN（`SQLITE_MISMATCH`）—— 两者都会落到 500，需显式 400 拦截。
+> - **Python**：经探针实测已正确（201 / snake_case / `name` 缺失返 422 非 500），无需改动。
+
+---
+
 ## 选型思考
 
 ### 五种 DB 访问层定位

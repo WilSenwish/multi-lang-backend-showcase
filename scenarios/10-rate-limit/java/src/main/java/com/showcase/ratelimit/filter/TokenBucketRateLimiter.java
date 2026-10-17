@@ -36,11 +36,10 @@ public class TokenBucketRateLimiter {
 
     @PostConstruct
     public void init() {
-        // 用简单的 ReentrantLock 保证并发安全
-        // 每纳秒填充 = 1e9 / qps（每纳秒应该填充多少）
-        // 为了避免精度问题，用整数运算：
-        maxTokens = burst * 1_000_000; // × 1e6 保持精度
-        refillNanosPerToken = (long) (1_000_000_000L * 1_000_000 / qps); // 填 1 个令牌需要多少纳秒（× 1e6）
+        // currentTokens 以「微令牌单位」存储（1 token = 1_000_000 单位），整数运算避免浮点漂移。
+        // 1 token 需要 1/qps 秒 = 1e9/qps 纳秒，故 1 个微令牌单位需要 (1e9/qps)/1e6 = 1000/qps 纳秒。
+        maxTokens = burst * 1_000_000;
+        refillNanosPerToken = (long) (1_000_000_000L / qps / 1_000_000); // 每微令牌单位需多少纳秒
         currentTokens = maxTokens;
         lastRefillNanos = System.nanoTime();
         log.info("[TokenBucket] QPS={}, burst={}, maxTokens={}, refillNanosPerToken={}",
@@ -55,8 +54,8 @@ public class TokenBucketRateLimiter {
         synchronized (lock) {
             long now = System.nanoTime();
             long elapsed = now - lastRefillNanos;
-            // 填充令牌：elapsed / refillNanosPerToken 个
-            long refill = elapsed * 1_000_000 / refillNanosPerToken; // elapsed(ns) × rate / 1e6
+            // 补充的微令牌数 = 经过的纳秒 / 每微令牌单位所需纳秒
+            long refill = elapsed / refillNanosPerToken;
             currentTokens = Math.min(maxTokens, currentTokens + refill);
             lastRefillNanos = now;
 
@@ -73,10 +72,15 @@ public class TokenBucketRateLimiter {
      */
     public long retryAfterMs() {
         synchronized (lock) {
-            long deficit = 1_000_000 - currentTokens;
+            long deficit = 1_000_000 - currentTokens; // 微令牌单位（1 token = 1e6）
             if (deficit <= 0) return 0;
-            long waitNanos = deficit * refillNanosPerToken / 1_000_000;
-            return waitNanos / 1_000_000; // ns → ms
+            // deficit 个微令牌 → 折算成秒：deficit/1e6 个 token，每 token 需 1e9/qps 纳秒
+            long waitNanos = (long) ((deficit / 1_000_000.0) * (1_000_000_000.0 / qps));
+            return Math.max(1, waitNanos / 1_000_000); // ns → ms（至少 1ms）
         }
     }
+
+    public double getQps() { return qps; }
+
+    public int getBurst() { return burst; }
 }

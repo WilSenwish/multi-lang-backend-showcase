@@ -70,6 +70,8 @@ public class RateLimitController {
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("service", "rate-limit-java");
         resp.put("algorithm", "token-bucket");
+        resp.put("qps", limiter.getQps());
+        resp.put("burst", limiter.getBurst());
         resp.put("total", totalRequests);
         resp.put("allowed", allowedRequests);
         resp.put("rejected", rejectedRequests);

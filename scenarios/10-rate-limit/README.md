@@ -57,11 +57,32 @@ GET /api/heavy
 | **配置** | qps=1, burst=10 | qps=1, burst=10 | qps=1, burst=10 | qps=1, burst=10 | qps=1, burst=10 |
 | **TryAcquire** | limiter.tryAcquire() | limiter.Allow() | try_acquire() | try_acquire() | tryAcquire() |
 | **Retry-After 计算** | 手动计算 reserve 时间 | limiter.Reserve().Delay() | 手动计算 deficit | 手动计算 deficit | 手动计算 deficit |
-| **429 + Retry-After** | ✅ Response + header | ✅ w.Header().Set | ✅ JSONResponse + headers | ✅ AppendHeaders | ✅ fastify.code().header() |
+| **429 + Retry-After** | ✅ Response + header | ✅ w.Header().Set | ✅ JSONResponse + headers | ✅ AppendHeaders | ✅ reply.code().header() |
 | **代码行数** | ~100 行（含 Guava + 手写两个版本） | ~90 行 | ~80 行 | ~100 行 | ~90 行 |
 | **性能排序** | 3️⃣ ReentrantLock 有开销 | 1️⃣ x/time/rate 零分配 | 4️⃣ Python 循环慢 | 1️⃣ Mutex + Rust 无 GC | 2️⃣ Node 单线程快 |
 | **优势** | Guava 成熟稳定 | Go 官方库、零分配、极简 | 单线程无锁、代码短 | 编译器强制安全 + governor 生态 | 单线程无锁 + 快 |
 | **痛点 & 坑** | Guava 3MB + 手写代码多 | 要下载 golang.org/x/time | Python 单线程 = 单 worker 才安全 | governor crate 额外依赖 | Node 单线程 CPU 密集会阻塞 |
+
+---
+
+## 契约要点（验证强度加强计划批次 5）
+
+场景 10 已在批次 5（2026-10-17）从「端口监听级」升级为**契约级断言**（`verify_10`），
+`python3 .wb_verify/verify_all.py 10` → **5/5 全绿**。契约覆盖四道关：
+
+- **health 真实暴露限流参数**：`/health` 必须返回 `qps`（=1）与 `burst`（=10），把「配置声称的限流速率」
+  和「真实生效的速率」钉在一起（专门抓 Java 令牌桶不暴露 getter 的缺陷）。
+- **突发限流生效**：连打 24 个 `/api/heavy`，前 9~11 个 200、其余 429（令牌桶容量 10 耗尽）。
+- **429 退避秒数合理**：每个 429 必须带 `Retry-After` 头且落在 **1~2 秒**；body 的 `retry_after_ms`
+  若出场须落在 [300, 2000]ms。两道关分别抓 Go 的退避膨胀（不 Cancel 会涨到 15s+）与 Java 的令牌桶换算错误。
+- **冷却可恢复**：429 后冷却 1.5s 再请求必须回到 200（令牌已补充）—— 抓「令牌永不补充」类缺陷。
+
+> ⚠️ **实现坑（已在批次 5 修复）**：
+> - **Go**：`rate.Reserve()` 拿到 reservation 后若不使用必须 `Cancel()`，否则白占未来令牌，`Retry-After` 持续膨胀。
+> - **TS(Node)**：429 响应必须用处理器形参 `reply`，写 `fastify.code(429)` 会因 `fastify.code` 不是函数
+>   而让每个限流请求直接 500（端口监听级完全看不见）。
+> - **Java**：手写令牌桶的微令牌单位（×1e6）与纳秒换算极易写反，导致 `retry_after_ms` 放大、令牌几乎不补充；
+>   务必单独补 `getQps()`/`getBurst()` 让 health 能暴露速率。
 
 ---
 

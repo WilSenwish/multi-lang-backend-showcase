@@ -70,14 +70,14 @@ const bucket = new TokenBucket(1.0, 10);
 
 const fastify = Fastify({ logger: true });
 
-fastify.get('/api/heavy', async () => {
+fastify.get('/api/heavy', async (_request, reply) => {
   if (!bucket.tryAcquire()) {
     const retryMs = bucket.retryAfterMs();
     const stats = bucket.getStats();
 
     fastify.log.warn({ msg: '[RateLimit] 429 被限流', retryAfterMs: retryMs });
 
-    return fastify.code(429).header('Retry-After', String(Math.max(1, Math.floor(retryMs / 1000) + 1))).send({
+    return reply.code(429).header('Retry-After', String(Math.max(1, Math.floor(retryMs / 1000) + 1))).send({
       error: 'rate limit exceeded',
       retry_after_ms: retryMs,
       ...stats,
@@ -87,11 +87,11 @@ fastify.get('/api/heavy', async () => {
   const stats = bucket.getStats();
   fastify.log.info({ msg: '[RateLimit] 200 通过' });
 
-  return {
+  return reply.send({
     ok: true,
     endpoint: '/api/heavy',
     ...stats,
-  };
+  });
 });
 
 fastify.get('/health', async () => ({

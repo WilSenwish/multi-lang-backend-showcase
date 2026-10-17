@@ -6,6 +6,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -20,12 +21,16 @@ public class UserController {
 
     // CREATE
     @PostMapping
-    public User create(@RequestBody UserInput input) {
+    public ResponseEntity<?> create(@RequestBody UserInput input) {
+        if (input.name == null || input.name.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "name is required"));
+        }
         User user = new User();
         user.setName(input.name);
         user.setEmail(input.email);
         user.setAge(input.age);
-        return userRepository.save(user);
+        User saved = userRepository.save(user);
+        return ResponseEntity.status(HttpStatus.CREATED).body(saved);
     }
 
     // READ ONE

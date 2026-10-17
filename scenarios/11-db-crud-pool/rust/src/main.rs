@@ -239,7 +239,7 @@ async fn main() {
     let pool = init_db().await;
     let app = Router::new()
         .route("/users", post(create_user).get(list_users))
-        .route("/users/{id}", get(get_user).put(update_user).delete(delete_user))
+        .route("/users/:id", get(get_user).put(update_user).delete(delete_user))
         .route("/health", get(|| async { axum::Json(serde_json::json!({"service": "db-crud-pool-rust", "db": "sqlite (sqlx)"})) }))
         .with_state(Arc::new(pool));
 
