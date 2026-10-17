@@ -9,7 +9,7 @@
 #   curl 'localhost:8083/hello?name=world'   # Rust
 #   curl 'localhost:8084/hello?name=world'   # TS-Node
 #
-# 说明：本文件只覆盖 00-hello-http。其余 12 个场景未做容器化（不在 Roadmap 范围内）。
+# 说明：本文件只覆盖 00-hello-http。其余 17 个场景未做容器化（仅 00-hello-http 各语言目录提供 Dockerfile）。
 # 顶层 version 字段在 Compose v2 已废弃且会产生警告，故不再声明。
 
 services:
