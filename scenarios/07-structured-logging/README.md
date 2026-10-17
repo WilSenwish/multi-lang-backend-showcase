@@ -20,6 +20,39 @@
 
 ---
 
+## 契约要点（验证器按这些命题断言）
+
+契约分两层。**HTTP 层**：响应键名一致；`request_id` 必须是 **8 位十六进制**；
+`/bench` 的 `count` 缺省 1000，非数字 / `< 1` → **400**；方法不匹配 → **405**。
+**日志层**：每个端点的应用日志必须带齐下表字段（级别、消息、链路字段、业务字段），
+ERROR 行必须带错误栈。字段路径**逐语言声明**（库命名差异不抹平，语义字段必须齐全）：
+
+| 语义字段 | Java | Go | Python | Rust | TS(Node) |
+|---------|------|----|--------|------|----------|
+| 级别（info） | `"INFO"` | `"info"` | `"info"` | `"INFO"` | `30` |
+| 级别（error） | `"ERROR"` | `"error"` | `"error"` | `"ERROR"` | `50` |
+| 消息 | `message` | `msg` | `event` | `fields.message` | `msg` |
+| requestId | `requestId` | `requestId` | `requestId` | `span.requestId` | `reqId` |
+| userId | `userId` | `userId` | `userId` | `span.userId` | `userId` |
+| path | `path` | `path` | `path` | `span.path` | `path` |
+| costMs | `costMs` | `costMs` | `costMs` | `fields.costMs` | `costMs` |
+| 错误栈 | `stack_trace` | `stacktrace` | `exception` | `fields.error` | `err.stack` |
+
+逐端点断言：`/ping` → `pong` + 两条 INFO（`ping request handled` / `request completed`，后者带 `costMs`）；
+`/debug` → INFO `debug endpoint hit`（`userId=debug-user`）；`/error` → ERROR
+`request failed with exception`（`costMs=150`、`errorCode=NULL_POINTER`、错误栈非空）；
+`/bench?count=N` → 恰好 **N 条** `benchmark log entry` + 一条 `benchmark completed`
+（`count`/`totalCostMs`/`avgLogNs` 均为非负数字）——**条数是"日志真的逐条落盘"的硬证据**。
+
+> **踩过的坑（均已修复，详见 VERIFICATION.md §12 批次 3）**：
+> Java 的 SLF4J kv 参数会被 logstash encoder 整个丢弃（必须用 `StructuredArguments.kv`）；
+> zap 生产配置默认开启采样（1000 条 bench 只落盘 ~109 条）；
+> fastify 的 `loggerInstance` 选项不存在（传错键名会被静默忽略）；
+> structlog 的 threadlocal 不配 `merge_threadlocal` processor 时链路字段永远不进日志；
+> Spring Boot 的 `BasicErrorController` 默认也注册在 `/error`（会把 POST 接走返回 500）。
+
+---
+
 ## 实现清单
 
 | 语言 | 日志库 | 特点 |

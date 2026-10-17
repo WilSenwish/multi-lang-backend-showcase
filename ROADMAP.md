@@ -164,7 +164,10 @@ Phase 6 专门补这一环。每个边界场景都必须写清楚**翻车方的�
    已完成批次 1（`00-hello-http` + `01-json-serialize`，10/10 全绿；顺带修掉 5 处跨语言偏差）。
    已完成批次 2（`02-concurrent-task` + `04-file-io`，10/10 全绿；修掉 12 处跨语言偏差，
    含 02 的 Java camelCase 静默不一致与 04 的一个从未被触发的 Java NPE）。
-   下一批：`06-simple-rag-demo` + `07-structured-logging`。
+   已完成批次 3（`06-simple-rag-demo` + `07-structured-logging`，10/10 全绿；修掉 22 处跨语言偏差，
+   含 06/Go 一调 `/ingest` 就 panic 的正则、07/Java 被 logstash encoder 丢弃的 kv 参数、
+   07/Go 被 zap 默认采样吞掉的 900 条日志、07/TS 被静默忽略的 `loggerInstance`）。
+   下一批：`08-config-management` + `09-http-client`。
 2. ~~**继续 Phase 6 剩余 1 个边界场景**（`17-error-handling`）。~~ ✅ 已完成（Phase 6 五个边界场景全部交付）
 3. 补充压测数据（`bench/http-bench.sh`）。
 4. 扩展 docs 专题深度（可参考本轮沉淀的 Python/uvicorn 优雅关闭踩坑，已写入 `docs/cloud-native-practice.md`）。

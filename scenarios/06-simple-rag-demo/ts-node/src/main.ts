@@ -138,11 +138,12 @@ function mockAnswer(question: string, sources: SourceResult[]): string {
   if (sources.length === 0) {
     return '我没有找到相关信息，请先 POST /ingest 摄入文档。';
   }
-  const lines = [`根据摄入的文档，关于「${question}」的相关内容：\n`];
+  // 格式与其余四门逐字节一致：头部 + 每行一条来源（行尾带换行、相关度固定 4 位小数）
+  let out = `根据摄入的文档，关于「${question}」的相关内容：\n\n`;
   sources.forEach((s, i) => {
-    lines.push(`${i + 1}. (来自 ${s.source}, 相关度 ${s.score}) ${s.text}`);
+    out += `${i + 1}. (来自 ${s.source}, 相关度 ${s.score.toFixed(4)}) ${s.text}\n`;
   });
-  return lines.join('\n');
+  return out;
 }
 
 // ==================== Fastify 服务 ====================
@@ -153,9 +154,23 @@ const fastify = Fastify({ logger: true });
 interface IngestBody { file_path: string; }
 interface AskBody { question: string; top_k?: number; }
 
+/** 方法不匹配时返回 405（fastify 的 .post/.get 默认给 404，与其余四门不一致） */
+function methodGuard(request: any, reply: any, allow: string): boolean {
+  if (request.method !== allow) {
+    reply.code(405);
+    return false;
+  }
+  return true;
+}
+
 // POST /ingest
-fastify.post<{ Body: IngestBody }>('/ingest', async (request, reply) => {
-  const { file_path } = request.body;
+fastify.all('/ingest', async (request, reply) => {
+  if (!methodGuard(request, reply, 'POST')) return { error: 'method not allowed' };
+  const { file_path } = request.body as IngestBody;
+  if (typeof file_path !== 'string' || file_path.length === 0) {
+    reply.code(400);
+    return { success: false, error: '缺少 file_path' };
+  }
   try {
     const chunks = store.ingestFile(file_path);
     return {
@@ -166,14 +181,26 @@ fastify.post<{ Body: IngestBody }>('/ingest', async (request, reply) => {
       vocab_size: store.vocabSize,
     };
   } catch (err: any) {
+    // 文件不存在/是目录/权限问题都是客户端给的 path 不对 → 400（与其余四门一致）
     reply.code(400);
     return { success: false, error: err.message };
   }
 });
 
 // POST /ask
-fastify.post<{ Body: AskBody }>('/ask', async (request) => {
-  const { question, top_k = 3 } = request.body;
+fastify.all('/ask', async (request, reply) => {
+  if (!methodGuard(request, reply, 'POST')) return { error: 'method not allowed' };
+  const { question, top_k = 3 } = request.body as AskBody;
+  // question 缺失/类型错 → 400；空串是合法输入（检索不到内容，返回兜底答案）
+  if (typeof question !== 'string') {
+    reply.code(400);
+    return { success: false, error: '缺少 question' };
+  }
+  // top_k 必须是 >= 1 的整数（0/负数与其余四门一起按 400 拒绝）
+  if (!Number.isInteger(top_k) || top_k < 1) {
+    reply.code(400);
+    return { success: false, error: 'top_k 必须 >= 1' };
+  }
   const sources = store.search(question, top_k);
   const answer = mockAnswer(question, sources);
   return {
@@ -186,11 +213,14 @@ fastify.post<{ Body: AskBody }>('/ask', async (request) => {
 });
 
 // GET /health
-fastify.get('/health', async () => ({
-  service: 'simple-rag-ts-node',
-  chunks_loaded: store.chunkCount,
-  vocab_size: store.vocabSize,
-}));
+fastify.all('/health', async (request, reply) => {
+  if (!methodGuard(request, reply, 'GET')) return { error: 'method not allowed' };
+  return {
+    service: 'simple-rag-ts-node',
+    chunks_loaded: store.chunkCount,
+    vocab_size: store.vocabSize,
+  };
+});
 
 const startServer = async () => {
   try {

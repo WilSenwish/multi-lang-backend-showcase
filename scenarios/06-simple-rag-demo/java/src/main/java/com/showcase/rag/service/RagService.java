@@ -56,6 +56,9 @@ public class RagService {
         String content = Files.readString(path);
         String fileName = path.getFileName().toString();
 
+        // 每次摄入重建 store（与 Go/Python/Rust/TS 一致：最后一次摄入的文档生效）
+        store.clear();
+
         // 按空行切段落（Markdown 自然分段）
         String[] paragraphs = content.split("\n\s*\n");
         int chunkId = 0;
@@ -120,18 +123,19 @@ public class RagService {
         return results.stream().limit(topK).collect(Collectors.toList());
     }
 
-    /** Mock 生成答案：把 top 片段拼起来回答 */
+    /** Mock 生成答案：把 top 片段拼起来回答（格式与其余四门逐字节一致） */
     public String mockAnswer(String question, List<Map<String, Object>> sources) {
         if (sources.isEmpty()) {
-            return "我没有找到相关信息，请先 /ingest 摄入文档。";
+            return "我没有找到相关信息，请先 POST /ingest 摄入文档。";
         }
         StringBuilder sb = new StringBuilder();
         sb.append("根据摄入的文档，关于「").append(question).append("」的相关内容：\n\n");
         for (int i = 0; i < sources.size(); i++) {
             @SuppressWarnings("unchecked")
             Map<String, Object> s = sources.get(i);
+            // Locale.ROOT：避免部分区域设置把小数点渲染成逗号；%.4f 与 Go/Python/Rust/TS 对齐
             sb.append(i + 1).append(". (来自 ").append(s.get("source"))
-              .append(", 相关度 ").append(s.get("score"))
+              .append(", 相关度 ").append(String.format(Locale.ROOT, "%.4f", ((Number) s.get("score")).doubleValue()))
               .append(") ").append(s.get("text")).append("\n");
         }
         return sb.toString();

@@ -45,9 +45,10 @@ public class RagController {
             resp.put("embeddings_generated", chunks);
             resp.put("vocab_size", ragService.vocabSize());
         } catch (IOException e) {
+            // 文件不存在/是目录/权限问题都是客户端给的 path 不对 → 400（与 Go/Python/Rust/TS 一致）
             resp.put("success", false);
             resp.put("error", e.getMessage());
-            return ResponseEntity.internalServerError().body(resp);
+            return ResponseEntity.badRequest().body(resp);
         }
         return ResponseEntity.ok(resp);
     }
@@ -57,15 +58,39 @@ public class RagController {
      * body: {"question": "Rust 的所有权是什么？", "top_k": 3}
      */
     @PostMapping("/ask")
-    public Map<String, Object> ask(@RequestBody Map<String, Object> body) {
-        String question = (String) body.get("question");
-        int topK = body.get("top_k") != null ? (int) body.get("top_k") : 3;
-
+    public ResponseEntity<Map<String, Object>> ask(@RequestBody Map<String, Object> body) {
         Map<String, Object> resp = new LinkedHashMap<>();
-        if (question == null || question.isEmpty()) {
+
+        Object qObj = body.get("question");
+        if (!(qObj instanceof String)) {
             resp.put("success", false);
             resp.put("error", "缺少 question");
-            return resp;
+            return ResponseEntity.badRequest().body(resp);
+        }
+        String question = (String) qObj;
+
+        // top_k 缺省 3；显式传值必须是 >= 1 的整数（Jackson 可能给 Integer/Long/Double，逐个安全转换）
+        int topK = 3;
+        Object tkObj = body.get("top_k");
+        if (tkObj != null) {
+            try {
+                if (tkObj instanceof Integer || tkObj instanceof Long) {
+                    topK = ((Number) tkObj).intValue();
+                } else if (tkObj instanceof Double && ((Double) tkObj) % 1.0 == 0) {
+                    topK = ((Double) tkObj).intValue();
+                } else {
+                    throw new IllegalArgumentException("top_k 必须是整数");
+                }
+            } catch (Exception e) {
+                resp.put("success", false);
+                resp.put("error", "top_k 必须是 >= 1 的整数");
+                return ResponseEntity.badRequest().body(resp);
+            }
+            if (topK < 1) {
+                resp.put("success", false);
+                resp.put("error", "top_k 必须是 >= 1 的整数");
+                return ResponseEntity.badRequest().body(resp);
+            }
         }
 
         // 检索
@@ -79,7 +104,7 @@ public class RagController {
         resp.put("answer", answer);
         resp.put("sources", sources);
         resp.put("mode", "local-mock"); // 标明是本地 mock 还是真实 LLM
-        return resp;
+        return ResponseEntity.ok(resp);
     }
 
     /**

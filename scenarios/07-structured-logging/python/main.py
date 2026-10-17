@@ -18,12 +18,15 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
+import sys
 import time
 import uuid
 from typing import Optional
 
 import structlog
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
 app = FastAPI(title="structured-logging-python", version="1.0.0")
 
@@ -32,8 +35,17 @@ app = FastAPI(title="structured-logging-python", version="1.0.0")
 
 def setup_logging():
     """配置 structlog 输出 JSON 到 stdout"""
+    # 输出重定向到文件时 stdout 默认块缓冲，日志会延迟整块出现；强制行缓冲
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
     structlog.configure(
         processors=[
+            # 0. 把 contextvars 里的链路字段（requestId/userId/path）合并进每条日志
+            #    （这就是 Java MDC 的 Python 版对应物；少了这个 processor，
+            #     bind_contextvars 存了值也不会出现在日志里）
+            structlog.contextvars.merge_contextvars,
             # 1. 给所有事件加时间戳
             structlog.processors.TimeStamper(fmt="iso"),
             # 2. 加日志级别
@@ -63,6 +75,12 @@ setup_logging()
 logger = structlog.get_logger()
 
 
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request, exc: RequestValidationError):
+    """把 pydantic 的 422 统一改写为 400（与其余四门一致：非法入参一律 400）"""
+    return JSONResponse(status_code=400, content={"error": "invalid parameters"})
+
+
 # ==================== Request Context（类似 Java MDC / Go context） ====================
 
 # Python contextvars：请求级别的上下文变量（类似 Java MDC）
@@ -78,14 +96,13 @@ async def request_context_middleware(request: Request, call_next):
     request_id_var.set(req_id)
     path_var.set(request.url.path)
 
-    # 用 structlog 的 bind 把 contextvars 注入到每条日志
+    # 用 structlog 的 contextvars 把链路字段注入到每条日志（Java MDC 的对应物）
     bound_logger = logger.bind(
         requestId=req_id,
         userId=user_id_var.get(),
         path=request.url.path,
     )
-    # 替换当前请求的全局 logger（Python 单线程，contextvars 自动隔离请求）
-    structlog.threadlocal.bind_threadlocal(
+    structlog.contextvars.bind_contextvars(
         requestId=req_id,
         userId=user_id_var.get(),
         path=request.url.path,
@@ -98,7 +115,7 @@ async def request_context_middleware(request: Request, call_next):
     finally:
         cost_ms = int((time.time() - start) * 1000)
         bound_logger.info("request completed", costMs=cost_ms)
-        structlog.threadlocal.clear_threadlocal()
+        structlog.contextvars.clear_contextvars()
 
 
 # ==================== 端点 ====================
@@ -113,6 +130,8 @@ async def ping():
 async def debug():
     # Debug 级别：min_level=INFO 默认不开，实际会被过滤
     logger.debug("debug request received", param1="value1", param2=42)
+    # 该端点的日志 userId 与其余四门一致为 debug-user（中间件默认值是 anonymous）
+    structlog.contextvars.bind_contextvars(userId="debug-user")
     logger.info("debug endpoint hit")
     return {"debug": True, "request_id": request_id_var.get()}
 
@@ -123,6 +142,7 @@ async def error_endpoint():
         null_str: Optional[str] = None
         null_str.split(",")  # AttributeError!
     except Exception as e:
+        structlog.contextvars.bind_contextvars(userId="error-user")
         # 带 exc_info=True 会自动在 JSON 里加 exc_info 字段（格式化的 traceback）
         logger.error(
             "request failed with exception",
@@ -134,7 +154,11 @@ async def error_endpoint():
 
 
 @app.get("/bench")
-async def bench(count: int = 1000):
+async def bench(count: int = Query(default=1000)):
+    # count 必须 >= 1（与其余四门一致：0/负数/非数字都是客户端错误 → 400）
+    if count < 1:
+        raise HTTPException(status_code=400, detail="count must be >= 1")
+    structlog.contextvars.bind_contextvars(userId="bench-user")
     start = time.time()
     for i in range(count):
         logger.info("benchmark log entry", index=i, total=count)

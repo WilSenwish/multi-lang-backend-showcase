@@ -15,6 +15,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"log"
 	"net/http"
@@ -67,19 +68,35 @@ func logFromContext(ctx context.Context) *zap.SugaredLogger {
 	)
 }
 
-// generateRequestID 生成短 UUID
+// generateRequestID 生成 8 位十六进制短 ID（与 Java/Python/Rust/TS 一致：
+// UUID 取前 8 位；之前用 UnixNano 拼出 16 位，跨语言不一致）
 func generateRequestID() string {
-	buf := make([]byte, 8)
-	t := time.Now().UnixNano()
-	for i := 0; i < 8; i++ {
-		buf[i] = byte(t >> (i * 4))
+	buf := make([]byte, 4)
+	if _, err := rand.Read(buf); err != nil {
+		// crypto/rand 失败时退化为时间戳低 32 位（仅兜底，正常不会走到）
+		return fmt.Sprintf("%08x", time.Now().UnixNano()&0xFFFFFFFF)
 	}
 	return fmt.Sprintf("%x", buf)
+}
+
+// methodGuard 方法不匹配返回 405（net/http 的 ServeMux 不区分方法，
+// 不显式检查的话 POST /ping 也会 200，与其余四门的 405 不一致）
+func methodGuard(w http.ResponseWriter, r *http.Request, allow string) bool {
+	if r.Method != allow {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		fmt.Fprintf(w, `{"error":"method not allowed"}`)
+		return false
+	}
+	return true
 }
 
 // ==================== Handler ====================
 
 func pingHandler(w http.ResponseWriter, r *http.Request) {
+	if !methodGuard(w, r, http.MethodGet) {
+		return
+	}
 	start := time.Now()
 	rc := &RequestContext{
 		RequestID: generateRequestID(),
@@ -99,6 +116,9 @@ func pingHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func debugHandler(w http.ResponseWriter, r *http.Request) {
+	if !methodGuard(w, r, http.MethodGet) {
+		return
+	}
 	rc := &RequestContext{
 		RequestID: generateRequestID(),
 		UserID:    "debug-user",
@@ -119,6 +139,9 @@ func debugHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func errorHandler(w http.ResponseWriter, r *http.Request) {
+	if !methodGuard(w, r, http.MethodGet) {
+		return
+	}
 	rc := &RequestContext{
 		RequestID: generateRequestID(),
 		UserID:    "error-user",
@@ -142,11 +165,21 @@ func errorHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func benchHandler(w http.ResponseWriter, r *http.Request) {
+	if !methodGuard(w, r, http.MethodGet) {
+		return
+	}
+	// count 缺省 1000；非数字或 < 1 都是客户端错误 → 400
+	// （之前是"解析失败静默用 1000"，非法输入被悄悄吞掉）
 	count := 1000
 	if c := r.URL.Query().Get("count"); c != "" {
-		if n, err := strconv.Atoi(c); err == nil && n > 0 {
-			count = n
+		n, err := strconv.Atoi(c)
+		if err != nil || n < 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprintf(w, `{"error":"count must be an integer >= 1"}`)
+			return
 		}
+		count = n
 	}
 
 	rc := &RequestContext{
@@ -201,6 +234,11 @@ func main() {
 	cfg.EncoderConfig.StacktraceKey = "stacktrace"
 	cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
 	cfg.EncoderConfig.EncodeLevel = zapcore.LowercaseLevelEncoder
+
+	// 关闭采样：zap 生产配置默认 Initial=100/Thereafter=100 —— 同一秒内结构相同的
+	// 日志超过 100 条后只保留 1/100。bench 打 1000 条实际只会落盘 ~109 条，
+	// 而响应里的 avgLogNs 显示"1ms 就写完了 1000 条"——声称值与真实值脱钩。
+	cfg.Sampling = nil
 
 	l, err := cfg.Build()
 	if err != nil {

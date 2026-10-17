@@ -74,8 +74,8 @@ SCENARIOS = [
     {"name":"03-cli-tool","kind":"cli"},
     {"name":"04-file-io","kind":"contract","ports":{"java":8095,"go":8096,"python":8097,"rust":8098,"ts-node":8099}},
     {"name":"05-unit-test-mock","kind":"test"},
-    {"name":"06-simple-rag-demo","kind":"http","ports":{"java":8100,"go":8101,"python":8102,"rust":8103,"ts-node":8104}},
-    {"name":"07-structured-logging","kind":"http","ports":{"java":8105,"go":8106,"python":8107,"rust":8108,"ts-node":8109}},
+    {"name":"06-simple-rag-demo","kind":"contract","ports":{"java":8100,"go":8101,"python":8102,"rust":8103,"ts-node":8104}},
+    {"name":"07-structured-logging","kind":"contract","ports":{"java":8105,"go":8106,"python":8107,"rust":8108,"ts-node":8109}},
     {"name":"08-config-management","kind":"http","ports":{"java":8110,"go":8111,"python":8112,"rust":8113,"ts-node":8114}},
     {"name":"09-http-client","kind":"http","ports":{"java":8115,"go":8116,"python":8117,"rust":8118,"ts-node":8119}},
     {"name":"10-rate-limit","kind":"http","ports":{"java":8120,"go":8121,"python":8122,"rust":8123,"ts-node":8124}},
@@ -1608,6 +1608,459 @@ def verify_04(lang, port, d, log):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ================= 场景 06：轻量 RAG Demo =================
+# 契约（README 声称"五门语言业务逻辑完全一致"，这里把它显式化成可断言的命题）：
+#   /ingest  每次摄入重建 store（最后一次摄入生效）；chunks = 保留段数（strip 后 >= 10 字符），
+#            vocab_size = 全部保留段的去重词表大小；file 回显入参路径
+#   /ask     sources 只含 score>0 的段、按 score 降序、top_k 截断；
+#            answer = 头部 + 每条来源一行（相关度固定 4 位小数、行尾换行）
+#   边界     缺 question / question 类型错 / top_k<1 / 文件不存在 / path 是目录 /
+#            缺 file_path / file_path 类型错 / 畸形 JSON → 400；方法不匹配 → 405
+# oracle：验证器用 Python 独立重写同一套 pipeline（切段/分词/词频向量/cosine）逐字段比对 ——
+#         跨语言互比只能知道"有人错了"，oracle 才能定位"谁 + 错在哪个任务"。
+P06_DOC1 = """Rust 的所有权系统在编译期保证内存安全，不需要垃圾回收。所有权 让每个值只有一个所有者，内存安全 由借用检查器验证。
+
+Go 的 goroutine 是轻量级线程，内存安全 由 runtime 保证，channel 在 goroutine 之间传递消息。
+
+tiny
+
+Rust 的编译器在编译期捕获数据竞争，内存安全 依赖所有权 与生命周期检查，这是零成本抽象的典型例子。
+
+短
+
+向量检索依赖余弦相似度衡量查询与文档片段的角度差异，词频向量是最简单的实现，虽然不理解语义但足以演示 RAG 检索流程。
+
+0123456789
+
+Java 虚拟机通过垃圾回收自动管理内存，GC 停顿会影响延迟敏感的应用性能。"""
+# 第二处分隔符用 "\n \n"（\n+空格+\n）：只有按 \n\s*\n 正则切分的实现才能在这里切开，
+# 字面切 "\n\n" 的会把两段粘成一段、chunks 少 1（Rust 曾经的实现就是这样）
+P06_DOC1 = P06_DOC1.replace("传递消息。\n\ntiny", "传递消息。\n \ntiny")
+P06_DOC2 = """Kafka 是高吞吐的分布式消息队列，topic 分区保证顺序，consumer group 实现负载均衡。
+
+Redis 是内存数据库，支持字符串哈希列表等多种数据结构，单线程模型避免上下文切换。"""
+P06_Q1 = "rust 所有权 内存安全"
+P06_Q_EMPTY_HIT = "量子计算的故事"
+P06_ANSWER_FALLBACK = "我没有找到相关信息，请先 POST /ingest 摄入文档。"
+P06_SERVICE = {"java": "simple-rag-java", "go": "simple-rag-go", "python": "simple-rag-python",
+               "rust": "simple-rag-rust", "ts-node": "simple-rag-ts-node"}
+
+
+def _p06_tokens(text):
+    """与五门实现一致的分词：小写化 + [^a-z0-9\\u4e00-\\u9fff] 切分 + 丢弃 < 2 字符的词"""
+    return [t for t in re.split(r"[^a-z0-9\u4e00-\u9fff]+", text.lower()) if len(t) >= 2]
+
+
+def _p06_chunks(content):
+    """与五门实现一致的切段：\\n\\s*\\n 切分 + strip + 丢弃 < 10 字符的段"""
+    return [t for t in (p.strip() for p in re.split(r"\n\s*\n", content)) if len(t) >= 10]
+
+
+def _p06_oracle(content, question, top_k):
+    """独立重算 pipeline，返回 (保留段, 词表, 全部命中, top-k)。score 按 4 位小数四舍五入。"""
+    cs = _p06_chunks(content)
+    vocab = sorted({w for c in cs for w in _p06_tokens(c)})
+
+    def vec(text):
+        freq = {}
+        for t in _p06_tokens(text):
+            freq[t] = freq.get(t, 0) + 1
+        return [float(freq.get(w, 0)) for w in vocab]
+
+    q = vec(question)
+    qn = math.sqrt(sum(x * x for x in q))
+    hits = []
+    for c in cs:
+        v = vec(c)
+        dot = sum(x * y for x, y in zip(q, v))
+        cn = math.sqrt(sum(x * x for x in v))
+        s = dot / (qn * cn) if qn > 0 and cn > 0 else 0.0
+        if s > 0:
+            hits.append({"text": c, "score": round(s, 4)})
+    # 稳定排序：同分按段落顺序（各语言迭代顺序不同，故测试文档刻意设计为分数互异）
+    hits.sort(key=lambda r: r["score"], reverse=True)
+    return cs, vocab, hits, hits[:top_k]
+
+
+def _p06_render_answer(question, sources):
+    """与五门实现一致的答案拼接。用响应自带的 score 渲染，规避浮点末位差异。"""
+    out = "根据摄入的文档，关于「%s」的相关内容：\n\n" % question
+    for i, s in enumerate(sources):
+        out += "%d. (来自 %s, 相关度 %.4f) %s\n" % (i + 1, s["source"], s["score"], s["text"])
+    return out
+
+
+def _p06_check_ask(question, want_sources):
+    """ask 契约：键集合 / 回显 / sources 与 oracle 逐字段比对（score 容忍 2e-4 浮点差）/ answer 自洽"""
+
+    def check(status, headers, body, fails, label):
+        if status != 200:
+            fails.append("[%s] HTTP %d（期望 200）" % (label, status))
+            return
+        if not isinstance(body, dict):
+            fails.append("[%s] 响应不是 JSON 对象: %r" % (label, body))
+            return
+        if set(body.keys()) != {"success", "question", "answer", "sources", "mode"}:
+            fails.append("[%s] 键集合不符: %s" % (label, sorted(body.keys())))
+            return
+        if body.get("success") is not True:
+            fails.append("[%s] success=%r" % (label, body.get("success")))
+        if body.get("question") != question:
+            fails.append("[%s] question 回显=%r" % (label, body.get("question")))
+        if body.get("mode") != "local-mock":
+            fails.append("[%s] mode=%r" % (label, body.get("mode")))
+        src = body.get("sources")
+        if not isinstance(src, list):
+            fails.append("[%s] sources 不是数组: %r" % (label, src))
+            return
+        if len(src) != len(want_sources):
+            fails.append("[%s] sources 数量=%d（期望 %d）" % (label, len(src), len(want_sources)))
+            return
+        for i, (got, want) in enumerate(zip(src, want_sources)):
+            if set(got.keys()) != {"text", "source", "score"}:
+                fails.append("[%s] sources[%d] 键集合=%s" % (label, i, sorted(got.keys())))
+                continue
+            if got["text"] != want["text"]:
+                fails.append("[%s] sources[%d].text 与 oracle 不符（顺序错或切分/分词不一致）" % (label, i))
+            if got["source"] != want["source"]:
+                fails.append("[%s] sources[%d].source=%r（期望 %r）" % (label, i, got["source"], want["source"]))
+            gs = got["score"]
+            if not isinstance(gs, (int, float)) or isinstance(gs, bool) or abs(gs - want["score"]) > 0.0002:
+                fails.append("[%s] sources[%d].score=%r（oracle %.4f，容忍 2e-4 浮点差）"
+                             % (label, i, gs, want["score"]))
+        if body.get("answer") != _p06_render_answer(question, src):
+            fails.append("[%s] answer 与自带 sources 渲染结果不一致: %r" % (label, body.get("answer")))
+
+    return check
+
+
+def _p06_check_empty_ask(question):
+    """无命中时的 ask：sources 必须是 []（不是 null）、answer 是兜底文案"""
+
+    def check(status, headers, body, fails, label):
+        if status != 200:
+            fails.append("[%s] HTTP %d（期望 200）" % (label, status))
+            return
+        if not isinstance(body, dict) or body.get("sources") != []:
+            fails.append("[%s] 无命中时 sources=%r（必须是 []，nil/None 会序列化成 null）"
+                         % (label, body.get("sources") if isinstance(body, dict) else body))
+            return
+        if body.get("answer") != P06_ANSWER_FALLBACK:
+            fails.append("[%s] 兜底 answer=%r" % (label, body.get("answer")))
+
+    return check
+
+
+def verify_06(lang, port, d, log):
+    tmp = tempfile.mkdtemp(prefix="wb-verify-06-")
+    try:
+        doc1 = os.path.join(tmp, "doc1.md")
+        doc2 = os.path.join(tmp, "doc2.md")
+        with open(doc1, "w", encoding="utf-8") as f:
+            f.write(P06_DOC1)
+        with open(doc2, "w", encoding="utf-8") as f:
+            f.write(P06_DOC2)
+        _, vocab1, hits1, top1_3 = _p06_oracle(P06_DOC1, P06_Q1, 3)
+        _, _, _, top1_2 = _p06_oracle(P06_DOC1, P06_Q1, 2)
+        _, vocab2, _, _ = _p06_oracle(P06_DOC2, P06_Q1, 3)
+        for s in hits1 + top1_2 + top1_3:
+            s["source"] = "doc1.md"
+        svc = P06_SERVICE[lang]
+        cases = [
+            {"name": "ask（未摄入）→ 空结果 + 兜底答案", "method": "POST", "path": "/ask",
+             "body": {"question": P06_Q1}, "status": 200, "assert": _p06_check_empty_ask(P06_Q1)},
+            {"name": "health（未摄入）", "method": "GET", "path": "/health", "status": 200,
+             "content_type": "application/json",
+             "json": {"service": svc, "chunks_loaded": 0, "vocab_size": 0}, "exact": True},
+            {"name": "ingest doc1", "method": "POST", "path": "/ingest",
+             "body": {"file_path": doc1}, "status": 200, "content_type": "application/json",
+             "json": {"success": True, "file": doc1, "chunks": len(_p06_chunks(P06_DOC1)),
+                      "embeddings_generated": len(_p06_chunks(P06_DOC1)),
+                      "vocab_size": len(vocab1)}, "exact": True},
+            {"name": "health（摄入后）", "method": "GET", "path": "/health", "status": 200,
+             "json": {"service": svc, "chunks_loaded": len(_p06_chunks(P06_DOC1)),
+                      "vocab_size": len(vocab1)}, "exact": True},
+            {"name": "ask top_k=3", "method": "POST", "path": "/ask",
+             "body": {"question": P06_Q1, "top_k": 3}, "status": 200,
+             "assert": _p06_check_ask(P06_Q1, top1_3)},
+            {"name": "ask top_k=2（截断）", "method": "POST", "path": "/ask",
+             "body": {"question": P06_Q1, "top_k": 2}, "status": 200,
+             "assert": _p06_check_ask(P06_Q1, top1_2)},
+            {"name": "ask top_k=10（超出命中数）", "method": "POST", "path": "/ask",
+             "body": {"question": P06_Q1, "top_k": 10}, "status": 200,
+             "assert": _p06_check_ask(P06_Q1, hits1)},
+            {"name": "ask 缺 top_k（默认 3）", "method": "POST", "path": "/ask",
+             "body": {"question": P06_Q1}, "status": 200,
+             "assert": _p06_check_ask(P06_Q1, top1_3)},
+            {"name": "ask 无命中问题", "method": "POST", "path": "/ask",
+             "body": {"question": P06_Q_EMPTY_HIT}, "status": 200,
+             "assert": _p06_check_empty_ask(P06_Q_EMPTY_HIT)},
+            {"name": "ask 空问题串（合法）", "method": "POST", "path": "/ask",
+             "body": {"question": ""}, "status": 200, "assert": _p06_check_empty_ask("")},
+            {"name": "ask 缺 question → 400", "method": "POST", "path": "/ask",
+             "body": {"top_k": 3}, "status": 400},
+            {"name": "ask question 类型错 → 400", "method": "POST", "path": "/ask",
+             "body": {"question": 123}, "status": 400},
+            {"name": "ask top_k=0 → 400", "method": "POST", "path": "/ask",
+             "body": {"question": P06_Q1, "top_k": 0}, "status": 400},
+            {"name": "ask top_k=-1 → 400", "method": "POST", "path": "/ask",
+             "body": {"question": P06_Q1, "top_k": -1}, "status": 400},
+            {"name": "ask top_k=1.5 → 400", "method": "POST", "path": "/ask",
+             "body": {"question": P06_Q1, "top_k": 1.5}, "status": 400},
+            {"name": "ingest 文件不存在 → 400", "method": "POST", "path": "/ingest",
+             "body": {"file_path": os.path.join(tmp, "nope.md")}, "status": 400},
+            {"name": "ingest path 是目录 → 400", "method": "POST", "path": "/ingest",
+             "body": {"file_path": tmp}, "status": 400},
+            {"name": "ingest 缺 file_path → 400", "method": "POST", "path": "/ingest",
+             "body": {}, "status": 400},
+            {"name": "ingest file_path 类型错 → 400", "method": "POST", "path": "/ingest",
+             "body": {"file_path": 123}, "status": 400},
+            {"name": "ingest 畸形 JSON → 400", "method": "POST", "path": "/ingest",
+             "body": "{not-json", "status": 400},
+            {"name": "ask 畸形 JSON → 400", "method": "POST", "path": "/ask",
+             "body": "{not-json", "status": 400},
+            {"name": "重新摄入 doc2（store 重建）", "method": "POST", "path": "/ingest",
+             "body": {"file_path": doc2}, "status": 200,
+             "json": {"success": True, "file": doc2, "chunks": len(_p06_chunks(P06_DOC2)),
+                      "embeddings_generated": len(_p06_chunks(P06_DOC2)),
+                      "vocab_size": len(vocab2)}, "exact": True},
+            {"name": "health（重新摄入后）", "method": "GET", "path": "/health", "status": 200,
+             "json": {"service": svc, "chunks_loaded": len(_p06_chunks(P06_DOC2)),
+                      "vocab_size": len(vocab2)}, "exact": True},
+            {"name": "ask（重新摄入后无命中）", "method": "POST", "path": "/ask",
+             "body": {"question": P06_Q1}, "status": 200, "assert": _p06_check_empty_ask(P06_Q1)},
+            {"name": "GET /ingest → 405", "method": "GET", "path": "/ingest", "status": 405},
+            {"name": "GET /ask → 405", "method": "GET", "path": "/ask", "status": 405},
+            {"name": "POST /health → 405", "method": "POST", "path": "/health", "status": 405},
+            {"name": "未匹配路径 → 404", "method": "GET", "path": "/nope", "status": 404},
+        ]
+        return verify_cases(lang, port, d, log, cases)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ================= 场景 07：结构化日志 =================
+# 契约分两层：
+#   HTTP 层：响应键名 / request_id 必须是 8 位十六进制 / count 缺省 1000、非法值 400
+#   日志层：每个端点的应用日志必须带 级别 + 消息 + 链路字段（requestId/userId/path）
+#           + 业务字段（costMs/errorCode/count...）；ERROR 行必须带错误栈
+# 字段路径**逐语言声明**（日志库差异不强行抹平，只要求"语义字段都在、类型一致"）：
+P07_SPEC = {
+    #            info级别  error级别   消息路径            链路rid           uid             path            costMs         错误栈             errorCode       count/totalCostMs/avgLogNs
+    "java":    {"info": "INFO", "error": "ERROR", "msg": ("message",), "rid": ("requestId",),
+                "uid": ("userId",), "path": ("path",), "cost": ("costMs",),
+                "stack": ("stack_trace",), "errorCode": ("errorCode",),
+                "count": ("count",), "totalCostMs": ("totalCostMs",), "avgLogNs": ("avgLogNs",)},
+    "go":      {"info": "info", "error": "error", "msg": ("msg",), "rid": ("requestId",),
+                "uid": ("userId",), "path": ("path",), "cost": ("costMs",),
+                "stack": ("stacktrace",), "errorCode": ("errorCode",),
+                "count": ("count",), "totalCostMs": ("totalCostMs",), "avgLogNs": ("avgLogNs",)},
+    "python":  {"info": "info", "error": "error", "msg": ("event",), "rid": ("requestId",),
+                "uid": ("userId",), "path": ("path",), "cost": ("costMs",),
+                "stack": ("exception",), "errorCode": ("errorCode",),
+                "count": ("count",), "totalCostMs": ("totalCostMs",), "avgLogNs": ("avgLogNs",)},
+    # tracing 的 json() 把消息和事件字段放 fields.*，span 字段放 span.*（current_span 开启时）
+    "rust":    {"info": "INFO", "error": "ERROR", "msg": ("fields", "message"), "rid": ("span", "requestId"),
+                "uid": ("span", "userId"), "path": ("span", "path"), "cost": ("fields", "costMs"),
+                "stack": ("fields", "error"), "errorCode": ("fields", "errorCode"),
+                "count": ("fields", "count"), "totalCostMs": ("fields", "totalCostMs"),
+                "avgLogNs": ("fields", "avgLogNs")},
+    # pino 级别是数字（30=info/50=error）；自定义 logger 实例下 fastify 把请求 ID 放在顶层 reqId
+    "ts-node": {"info": 30, "error": 50, "msg": ("msg",), "rid": ("reqId",),
+                "uid": ("userId",), "path": ("path",), "cost": ("costMs",),
+                "stack": ("err", "stack"), "errorCode": ("errorCode",),
+                "count": ("count",), "totalCostMs": ("totalCostMs",), "avgLogNs": ("avgLogNs",)},
+}
+
+
+def _p07_read_json_lines(log):
+    """读出日志文件里所有能解析成 JSON 的行（跳过 Spring banner / 命令回显等噪声）"""
+    out = []
+    try:
+        with open(log, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line.startswith("{"):
+                    continue
+                try:
+                    out.append(json.loads(line))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return out
+
+
+def _p07_field(obj, path):
+    cur = obj
+    for k in path:
+        if not isinstance(cur, dict) or k not in cur:
+            return None
+        cur = cur[k]
+    return cur
+
+
+def _p07_wait_lines(log, pred, want=1, timeout=25.0):
+    """轮询日志直到满足 pred 的 JSON 行数达到 want。
+    必须轮询：pino 异步落盘、各语言缓冲策略不同，请求返回时日志可能还没写进去。"""
+    end = time.time() + timeout
+    while True:
+        hits = [o for o in _p07_read_json_lines(log) if pred(o)]
+        if len(hits) >= want or time.time() >= end:
+            return hits
+        time.sleep(0.25)
+
+
+def _p07_num_ok(v, minimum=0):
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and v >= minimum
+
+
+def verify_07(lang, port, d, log):
+    sp = P07_SPEC[lang]
+
+    def has(msg, rid=None, level=None):
+        def pred(o):
+            if _p07_field(o, sp["msg"]) != msg:
+                return False
+            if level is not None and o.get("level") != level:
+                return False
+            if rid is not None and _p07_field(o, sp["rid"]) != rid:
+                return False
+            return True
+        return pred
+
+    def check_line(label, fails, msg, rid, want_level, want_uid=None, want_path=None, require=None):
+        """等一条指定消息/级别/requestId 的日志行并校验链路字段。
+        require：该字段路径必须存在（TS 的 fastify 会自动打一条同名的
+        "request completed"（只有 res/responseTime），靠 costMs 字段区分出业务那条）。"""
+        hits = _p07_wait_lines(log, has(msg, rid=rid, level=want_level))
+        hits = [o for o in hits if require is None or _p07_field(o, require) is not None]
+        if not hits:
+            fails.append("[%s] 日志缺少 level=%r 且含 requestId=%r 的 %r 行%s"
+                         % (label, want_level, rid, msg,
+                            "（且含字段 %s）" % ".".join(require) if require else ""))
+            return None
+        o = hits[-1]
+        if want_uid is not None and _p07_field(o, sp["uid"]) != want_uid:
+            fails.append("[%s] %r 行 userId=%r（期望 %r）" % (label, msg, _p07_field(o, sp["uid"]), want_uid))
+        if want_path is not None and _p07_field(o, sp["path"]) != want_path:
+            fails.append("[%s] %r 行 path=%r（期望 %r）" % (label, msg, _p07_field(o, sp["path"]), want_path))
+        return o
+
+    def ping_assert(status, headers, body, fails, label):
+        if status != 200 or not isinstance(body, dict) or body.get("pong") is not True:
+            fails.append("[%s] 响应异常: HTTP %s %r" % (label, status, body))
+            return
+        rid = body.get("request_id")
+        if not isinstance(rid, str) or not re.fullmatch(r"[0-9a-f]{8}", rid):
+            fails.append("[%s] request_id=%r 不是 8 位十六进制（跨语言格式契约）" % (label, rid))
+            return
+        if "application/json" not in headers.get("content-type", ""):
+            fails.append("[%s] Content-Type=%r" % (label, headers.get("content-type")))
+        check_line(label, fails, "ping request handled", rid, sp["info"], "anonymous", "/ping")
+        o = check_line(label, fails, "request completed", rid, sp["info"], "anonymous", "/ping",
+                       require=sp["cost"])
+        if o is not None:
+            cm = _p07_field(o, sp["cost"])
+            if not _p07_num_ok(cm):
+                fails.append("[%s] request completed 行 costMs=%r 不是非负数字" % (label, cm))
+
+    def debug_assert(status, headers, body, fails, label):
+        if status != 200 or not isinstance(body, dict) or body.get("debug") is not True:
+            fails.append("[%s] 响应异常: HTTP %s %r" % (label, status, body))
+            return
+        rid = body.get("request_id")
+        if not isinstance(rid, str) or not re.fullmatch(r"[0-9a-f]{8}", rid):
+            fails.append("[%s] request_id=%r 不是 8 位十六进制" % (label, rid))
+            return
+        # 级别与消息跨语言一致：INFO "debug endpoint hit"（Rust/TS 曾经一个用 WARN、一个消息带后缀）
+        check_line(label, fails, "debug endpoint hit", rid, sp["info"], "debug-user", "/debug")
+
+    def error_assert(status, headers, body, fails, label):
+        if status != 200 or not isinstance(body, dict) or body.get("error") != "simulated":
+            fails.append("[%s] 响应异常: HTTP %s %r" % (label, status, body))
+            return
+        hits = _p07_wait_lines(log, has("request failed with exception", level=sp["error"]))
+        if not hits:
+            fails.append("[%s] 日志缺少 level=%r 的 'request failed with exception' 行" % (label, sp["error"]))
+            return
+        o = hits[-1]
+        rid = _p07_field(o, sp["rid"])
+        if not isinstance(rid, str) or not re.fullmatch(r"[0-9a-f]{8}", rid):
+            fails.append("[%s] error 行 requestId=%r 不是 8 位十六进制" % (label, rid))
+        if _p07_field(o, sp["uid"]) != "error-user":
+            fails.append("[%s] error 行 userId=%r（期望 error-user）" % (label, _p07_field(o, sp["uid"])))
+        if _p07_field(o, sp["path"]) != "/error":
+            fails.append("[%s] error 行 path=%r" % (label, _p07_field(o, sp["path"])))
+        cm = _p07_field(o, sp["cost"])
+        if cm != 150:
+            fails.append("[%s] error 行 costMs=%r（期望 150）" % (label, cm))
+        if _p07_field(o, sp["errorCode"]) != "NULL_POINTER":
+            fails.append("[%s] error 行 errorCode=%r（期望 NULL_POINTER）" % (label, _p07_field(o, sp["errorCode"])))
+        st = _p07_field(o, sp["stack"])
+        if not isinstance(st, str) or not st.strip():
+            fails.append("[%s] error 行错误栈字段 %s=%r 为空" % (label, sp["stack"], st))
+
+    def bench_assert(count):
+        def assert_fn(status, headers, body, fails, label):
+            if status != 200 or not isinstance(body, dict):
+                fails.append("[%s] 响应异常: HTTP %s %r" % (label, status, body))
+                return
+            rid = body.get("request_id")
+            if not isinstance(rid, str) or not re.fullmatch(r"[0-9a-f]{8}", rid):
+                fails.append("[%s] request_id=%r 不是 8 位十六进制" % (label, rid))
+                return
+            if body.get("count") != count:
+                fails.append("[%s] count=%r（期望 %d）" % (label, body.get("count"), count))
+            if not _p07_num_ok(body.get("total_cost_ms")):
+                fails.append("[%s] total_cost_ms=%r 不是非负数字" % (label, body.get("total_cost_ms")))
+            if not _p07_num_ok(body.get("avg_log_ns")):
+                fails.append("[%s] avg_log_ns=%r 不是非负数字" % (label, body.get("avg_log_ns")))
+            if set(body.keys()) != {"count", "total_cost_ms", "avg_log_ns", "request_id"}:
+                fails.append("[%s] 键集合=%s" % (label, sorted(body.keys())))
+            # 日志：恰好 count 条 benchmark log entry（证明日志真的逐条写了，且都带链路字段）
+            entries = _p07_wait_lines(log, has("benchmark log entry", rid=rid), want=count)
+            if len(entries) < count:
+                fails.append("[%s] 'benchmark log entry' 只有 %d 条（期望 %d）" % (label, len(entries), count))
+            for o in entries[:3]:
+                if _p07_field(o, sp["uid"]) != "bench-user":
+                    fails.append("[%s] bench entry 行 userId=%r（期望 bench-user）" % (label, _p07_field(o, sp["uid"])))
+                    break
+            o = check_line(label, fails, "benchmark completed", rid, sp["info"], "bench-user", "/bench",
+                           require=sp["count"])
+            if o is not None:
+                if _p07_field(o, sp["count"]) != count:
+                    fails.append("[%s] benchmark completed 行 count=%r（期望 %d）"
+                                 % (label, _p07_field(o, sp["count"]), count))
+                if not _p07_num_ok(_p07_field(o, sp["totalCostMs"])):
+                    fails.append("[%s] benchmark completed 行 totalCostMs=%r 不是非负数字"
+                                 % (label, _p07_field(o, sp["totalCostMs"])))
+                if not _p07_num_ok(_p07_field(o, sp["avgLogNs"])):
+                    fails.append("[%s] benchmark completed 行 avgLogNs=%r 不是非负数字"
+                                 % (label, _p07_field(o, sp["avgLogNs"])))
+        return assert_fn
+
+    cases = [
+        {"name": "GET /ping", "method": "GET", "path": "/ping", "status": 200,
+         "content_type": "application/json", "assert": ping_assert},
+        {"name": "GET /debug", "method": "GET", "path": "/debug", "status": 200, "assert": debug_assert},
+        {"name": "GET /error", "method": "GET", "path": "/error", "status": 200, "assert": error_assert},
+        {"name": "GET /bench?count=20", "method": "GET", "path": "/bench?count=20", "status": 200,
+         "assert": bench_assert(20)},
+        {"name": "GET /bench（count 缺省 1000）", "method": "GET", "path": "/bench", "status": 200,
+         "assert": bench_assert(1000)},
+        {"name": "GET /bench?count=0 → 400", "method": "GET", "path": "/bench?count=0", "status": 400},
+        {"name": "GET /bench?count=-1 → 400", "method": "GET", "path": "/bench?count=-1", "status": 400},
+        {"name": "GET /bench?count=abc → 400", "method": "GET", "path": "/bench?count=abc", "status": 400},
+        {"name": "POST /ping → 405", "method": "POST", "path": "/ping", "status": 405},
+        {"name": "POST /debug → 405", "method": "POST", "path": "/debug", "status": 405},
+        {"name": "POST /error → 405", "method": "POST", "path": "/error", "status": 405},
+        {"name": "POST /bench → 405", "method": "POST", "path": "/bench", "status": 405},
+        {"name": "未匹配路径 → 404", "method": "GET", "path": "/nope", "status": 404},
+    ]
+    return verify_cases(lang, port, d, log, cases)
+
+
 # kind == "contract" 的场景注册表。SCENARIOS 定义在文件顶部，这里用名字查表
 # （而不是在 SCENARIOS 里直接引用函数）以避免前向引用。
 CONTRACT_VERIFIERS = {
@@ -1615,6 +2068,8 @@ CONTRACT_VERIFIERS = {
     "01-json-serialize": verify_01,
     "02-concurrent-task": verify_02,
     "04-file-io": verify_04,
+    "06-simple-rag-demo": verify_06,
+    "07-structured-logging": verify_07,
 }
 
 

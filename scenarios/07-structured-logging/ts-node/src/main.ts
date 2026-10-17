@@ -29,30 +29,45 @@ const logger = pino({
 });
 
 const fastify = Fastify({
-  loggerInstance: logger, // 把 pino 传给 fastify
+  // 自定义 logger 实例要通过 `logger` 传入：fastify v4 没有 loggerInstance 选项，
+  // 传错键名会被静默忽略，服务退回 fastify 默认 logger（上面的 name/base/isoTime 全丢）
+  logger,
   genReqId: () => randomUUID().substring(0, 8), // 请求 ID 生成
 });
 
 // ==================== 端点 ====================
 
-fastify.get('/ping', async (request) => {
+/** 方法不匹配时返回 405（fastify 的 .get 默认给 404，与其余四门不一致） */
+function methodGuard(request: any, reply: any, allow: string): boolean {
+  if (request.method !== allow) {
+    reply.code(405);
+    return false;
+  }
+  return true;
+}
+
+fastify.all('/ping', async (request, reply) => {
+  if (!methodGuard(request, reply, 'GET')) return { error: 'method not allowed' };
   const start = Date.now();
   const reqId = request.id as string;
 
-  // fastify 的 request.log 是带 requestId 的子 logger
-  request.log.info({ msg: 'ping request handled' });
-  request.log.info({ msg: 'request completed', costMs: Date.now() - start });
+  // fastify 的 request.log 是带 requestId 的子 logger；userId 显式带上，
+  // 与其余四门的链路字段保持一致
+  request.log.info({ msg: 'ping request handled', userId: 'anonymous', path: '/ping' });
+  request.log.info({ msg: 'request completed', costMs: Date.now() - start, userId: 'anonymous', path: '/ping' });
 
   return { pong: true, request_id: reqId };
 });
 
-fastify.get('/debug', async (request) => {
-  // 直接用 warn 级别（info 默认级别不开 debug）
-  request.log.warn({ msg: 'debug endpoint hit', userId: 'debug-user' });
+fastify.all('/debug', async (request, reply) => {
+  if (!methodGuard(request, reply, 'GET')) return { error: 'method not allowed' };
+  // 级别与消息与其余四门对齐：INFO "debug endpoint hit"（pino 的 info 默认级别不开 debug）
+  request.log.info({ msg: 'debug endpoint hit', userId: 'debug-user', path: '/debug' });
   return { debug: true, request_id: request.id };
 });
 
-fastify.get('/error', async (request) => {
+fastify.all('/error', async (request, reply) => {
+  if (!methodGuard(request, reply, 'GET')) return { error: 'method not allowed' };
   try {
     // 故意模拟错误
     const nullStr: string | null = null;
@@ -63,6 +78,8 @@ fastify.get('/error', async (request) => {
       msg: 'request failed with exception',
       costMs: 150,
       errorCode: 'NULL_POINTER',
+      userId: 'error-user',
+      path: '/error',
       err, // pino 会自动解析 Error，输出 type/message/stack
     });
   }
@@ -70,15 +87,24 @@ fastify.get('/error', async (request) => {
   return { error: 'simulated' };
 });
 
-fastify.get('/bench', async (request) => {
-  const count = parseInt(
-    (request.query as { count?: string }).count || '1000',
-    10,
-  );
+fastify.all('/bench', async (request, reply) => {
+  if (!methodGuard(request, reply, 'GET')) return { error: 'method not allowed' };
+  const raw = (request.query as { count?: string }).count;
+  // count 缺省 1000；非数字 / < 1 都是客户端错误 → 400
+  // （之前 parseInt('abc') 得到 NaN，循环不执行、avgLogNs 变成 NaN→null 蒙混过关）
+  let count = 1000;
+  if (raw !== undefined) {
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 1) {
+      reply.code(400);
+      return { error: 'count must be an integer >= 1' };
+    }
+    count = n;
+  }
 
   const start = Date.now();
   for (let i = 0; i < count; i++) {
-    request.log.info({ msg: 'benchmark log entry', index: i, total: count });
+    request.log.info({ msg: 'benchmark log entry', index: i, total: count, userId: 'bench-user', path: '/bench' });
   }
   const cost = Date.now() - start;
   const avgNs = (cost * 1_000_000) / count;
@@ -88,6 +114,8 @@ fastify.get('/bench', async (request) => {
     count,
     totalCostMs: cost,
     avgLogNs: Math.round(avgNs),
+    userId: 'bench-user',
+    path: '/bench',
   });
 
   return {

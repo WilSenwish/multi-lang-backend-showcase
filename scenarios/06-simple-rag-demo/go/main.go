@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"unicode"
+	"unicode/utf8"
 )
 
 const listenAddr = ":8101"
@@ -29,16 +30,16 @@ const listenAddr = ":8101"
 // ==================== 数据结构 ====================
 
 type Chunk struct {
-	ID      string
-	Text    string
-	Source  string
-	Vector  []float64 // 词频向量
+	ID     string
+	Text   string
+	Source string
+	Vector []float64 // 词频向量
 }
 
 type Store struct {
-	mu    sync.RWMutex
+	mu     sync.RWMutex
 	chunks map[string]*Chunk
-	vocab []string // 全局词表（索引 = 向量维度）
+	vocab  []string // 全局词表（索引 = 向量维度）
 }
 
 func NewStore() *Store {
@@ -61,12 +62,17 @@ func (s *Store) IngestFile(filePath string) (int, error) {
 	content := string(data)
 	fileName := filepath.Base(filePath)
 
+	// 每次摄入重建 store（与 Java/Python/Rust/TS 一致：最后一次摄入的文档生效）
+	s.chunks = make(map[string]*Chunk)
+
 	// 按空行切段落
 	parts := regexp.MustCompile(`\n\s*\n`).Split(content, -1)
 	count := 0
 	for i, p := range parts {
 		trimmed := strings.TrimSpace(p)
-		if len(trimmed) < 10 {
+		// 用字符数而非字节数判断"太短"（与 Python/Rust/TS 一致；
+		// 字节数会把 5 个汉字=15 字节误判为"够长"）
+		if utf8.RuneCountInString(trimmed) < 10 {
 			continue
 		}
 		id := fmt.Sprintf("%s#%d", fileName, i)
@@ -113,13 +119,15 @@ func (s *Store) Search(question string, topK int) []SourceResult {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	// 空结果也要返回 [] 而不是 nil：nil 会被 json 编码成 null，与其余四门的 [] 不一致
+	empty := []SourceResult{}
 	if len(s.vocab) == 0 {
-		return nil
+		return empty
 	}
 
 	qVec := buildVector(question, s.vocab)
 
-	var results []SourceResult
+	results := empty
 	for _, c := range s.chunks {
 		score := cosineSimilarity(qVec, c.Vector)
 		if score > 0 {
@@ -131,8 +139,8 @@ func (s *Store) Search(question string, topK int) []SourceResult {
 		}
 	}
 
-	// 按 score 降序
-	sort.Slice(results, func(i, j int) bool {
+	// 按 score 降序（SliceStable：同分保持遍历顺序，避免 sort.Slice 的不稳定排序带来不确定性）
+	sort.SliceStable(results, func(i, j int) bool {
 		return results[i].Score > results[j].Score
 	})
 
@@ -161,7 +169,7 @@ func tokenize(text string) []string {
 	text = strings.ToLower(text)
 	var tokens []string
 	// 按非单词字符分割
-	fields := regexp.MustCompile(`[^a-z0-9\u4e00-\u9fff]+`).Split(text, -1)
+	fields := regexp.MustCompile(`[^a-z0-9\x{4e00}-\x{9fff}]+`).Split(text, -1)
 	for _, f := range fields {
 		f = strings.TrimSpace(f)
 		// 过滤太短
@@ -214,13 +222,21 @@ type IngestReq struct {
 }
 
 type AskReq struct {
-	Question string `json:"question"`
-	TopK     int    `json:"top_k"`
+	// 指针字段：区分"缺省"与"显式传值"。非指针 int 缺省即 0，与显式 0 无法区分
+	// （显式 top_k=0 应走 400 校验，缺省才用默认值 3）。
+	Question *string `json:"question"`
+	TopK     *int    `json:"top_k"`
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	json.NewEncoder(w).Encode(v)
+}
+
+func writeErr(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": msg})
 }
 
 func ingestHandler(w http.ResponseWriter, r *http.Request) {
@@ -231,22 +247,23 @@ func ingestHandler(w http.ResponseWriter, r *http.Request) {
 
 	var req IngestReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, map[string]interface{}{"success": false, "error": "invalid json"})
+		writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 
 	chunks, err := store.IngestFile(req.FilePath)
 	if err != nil {
-		writeJSON(w, map[string]interface{}{"success": false, "error": err.Error()})
+		// 文件不存在/是目录/权限问题都是客户端给的 path 不对 → 400（与 Python/Rust/TS 一致）
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	writeJSON(w, map[string]interface{}{
-		"success":             true,
-		"file":                req.FilePath,
-		"chunks":              chunks,
+		"success":              true,
+		"file":                 req.FilePath,
+		"chunks":               chunks,
 		"embeddings_generated": chunks,
-		"vocab_size":          len(store.vocab),
+		"vocab_size":           len(store.vocab),
 	})
 }
 
@@ -258,19 +275,29 @@ func askHandler(w http.ResponseWriter, r *http.Request) {
 
 	var req AskReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, map[string]interface{}{"success": false, "error": "invalid json"})
+		writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if req.TopK == 0 {
-		req.TopK = 3
+	// question 缺失/类型错 → 400；空串是合法输入（检索不到内容，返回兜底答案）
+	if req.Question == nil {
+		writeErr(w, http.StatusBadRequest, "缺少 question")
+		return
+	}
+	topK := 3
+	if req.TopK != nil {
+		topK = *req.TopK
+	}
+	if topK < 1 {
+		writeErr(w, http.StatusBadRequest, "top_k 必须 >= 1")
+		return
 	}
 
-	sources := store.Search(req.Question, req.TopK)
-	answer := mockAnswer(req.Question, sources)
+	sources := store.Search(*req.Question, topK)
+	answer := mockAnswer(*req.Question, sources)
 
 	writeJSON(w, map[string]interface{}{
 		"success":  true,
-		"question": req.Question,
+		"question": *req.Question,
 		"answer":   answer,
 		"sources":  sources,
 		"mode":     "local-mock",
@@ -278,12 +305,16 @@ func askHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	store.mu.RLock()
 	defer store.mu.RUnlock()
 	writeJSON(w, map[string]interface{}{
-		"service":      "simple-rag-go",
+		"service":       "simple-rag-go",
 		"chunks_loaded": len(store.chunks),
-		"vocab_size":   len(store.vocab),
+		"vocab_size":    len(store.vocab),
 	})
 }
 

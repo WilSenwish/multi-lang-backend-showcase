@@ -28,8 +28,8 @@
 
 共识别并修复 **39 条代码/文档缺陷**：首轮 34 条（编译期/启动期硬错误为主，见 §4），
 本轮复核新增 **5 条**（都是"能跑起来但行为不对"的静默缺陷，见 §5）。
-验证强度加强计划批次 1/2（§12）又识别并修复 **17 处跨语言偏差**（00/01 五处 + 02/04 十二处）——
-在"端口监听级"判定下，这些偏差没有任何一宗会暴露。
+验证强度加强计划批次 1/2/3（§12）又识别并修复 **39 处跨语言偏差**（00/01 五处 + 02/04 十二处 +
+06/07 二十二处）—— 在"端口监听级"判定下，这些偏差没有任何一宗会暴露。
 验证器本身的判定缺陷与设计要点见 §7（共 11 条），其中本轮修掉 3 条判定缺陷 ——
 **其中一条（`"shutdown" in log`）曾让真正的崩溃被记成 PASS**。
 
@@ -49,8 +49,8 @@
 | 03 | cli-tool | cli | 数值基准 + 选项语义 | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 04 | file-io | contract | **契约级**（28 用例：write→read 往返 + 本地磁盘 oracle + scan 遍历 oracle + 400/404/405 边界） | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 05 | unit-test-mock | test | 测试摘要（用例数） | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 06 | simple-rag-demo | http | 端口监听 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 07 | structured-logging | http | 端口监听 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 06 | simple-rag-demo | contract | **契约级**（28 用例：切分/分词/向量/cosine 全流程 oracle + answer 自洽 + 400/405 边界） | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 07 | structured-logging | contract | **契约级**（13 用例：响应键名/request_id 格式 + **日志字段逐语言比对** + 日志条数硬证据） | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 08 | config-management | http | 端口监听 | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 09 | http-client | http | 端口监听 | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 10 | rate-limit | http | 端口监听 | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -86,7 +86,7 @@
   - `contract`：**通用用例引擎**（`verify_cases`）—— 启动服务 → 逐个发请求 → 逐字段比对
     （`json_match` 递归子集/全等匹配，bool 与 int 分开判）。用例支持状态码、`Content-Type`、
     期望 JSON（`exact` 控制键集合）、自定义 `assert` 回调。自场景 00 起，http 场景
-    正从"端口监听"逐批升级到契约级（当前 00、01、02、04 已完成，见 §12）。
+    正从"端口监听"逐批升级到契约级（当前 00、01、02、04、06、07 已完成，见 §12）。
   - `http`：启动服务 → **原始 TCP 连接**探活（不用 curl/urllib，见 §7.1）→ 关闭进程组。
   - `cli`：对仓库根 `README.md` 跑 `-l -w`，把输出与**独立计算的基准值交叉核对**；
     再逐个跑 `-l` / `-w` / `-c`，校验**单选项只输出对应指标**；最后跑无选项，校验三项全输出。
@@ -679,7 +679,7 @@ tasks=8, task_ms=2000, fail_index=3, fail_after_ms=250
 |------|------|------|
 | 1 | `00-hello-http` + `01-json-serialize` | ✅ 已完成 |
 | 2 | `02-concurrent-task` + `04-file-io` | ✅ 已完成 |
-| 3 | `06-simple-rag-demo` + `07-structured-logging` | ⬜ 待开始 |
+| 3 | `06-simple-rag-demo` + `07-structured-logging` | ✅ 已完成 |
 | 4 | `08-config-management` + `09-http-client` | ⬜ 待开始 |
 | 5 | `10-rate-limit` + `11-db-crud-pool` | ⬜ 待开始 |
 | 6 | `03-cli-tool` + `05-unit-test-mock` + `12-graceful-shutdown`（行为级 → 继续加深） | ⬜ 待开始 |
@@ -772,3 +772,66 @@ scan 的 `files`/`total_bytes` 与本地 `os.walk`/`os.listdir` oracle 比对。
   契约下界因此留 2ms 容忍并写进注释，而不是强行抹平。
 
 批次 2 结果：`python3 .wb_verify/verify_all.py 02 04` → **10/10 全绿**（归档见 `.wb_verify/runs/20261016-233015_sub-02_04.md`）。
+
+### 批次 3（06 + 07）实测：RAG 全流程 oracle 与"日志到底写没写进去"，共修复 22 处跨语言偏差
+
+**场景 06（轻量 RAG Demo，28 用例）**：验证器用 Python **独立重写整条 pipeline**
+（`\n\s*\n` 切段 → 分词 → 词频向量 → cosine → top-k）作 oracle，再拿每个语言的响应逐字段比对。
+测试文档是刻意设计的确定性输入：6 个保留段（含 1 处 `\n \n` 分隔符、1 个 10 字符边界段、
+2 个应被跳过的短段）、28 个词表、对测试问题恰好 3 处命中且分数为 0.6547 / 0.4714 / 0.1741
+（互异且间隔大，避免同分排序不确定性）。`answer` 不直接比 oracle 字符串，而是断言
+"**answer == 用响应自带的 sources 渲染的结果**"（自洽）+ "sources 与 oracle 一致（score 容忍 2e-4）"
+—— 浮点末位差异不该让契约变脆，但格式契约（4 位小数、行尾换行、逐行一条来源）必须逐字节成立。
+
+| 语言 | 偏差 | 修正 |
+|------|------|------|
+| Go | **分词正则编译不过**：RE2 语法没有 `\uXXXX` 转义，`/ingest` 一被调用就 panic（`net/http` recover 后客户端只看到连接断开）——旧判定只探端口，从没人 POST 过 `/ingest`，这个崩溃从没暴露过 | 改 `\x{4e00}-\x{9fff}` |
+| Go | 段长用**字节数**判断（5 个汉字 = 15 字节被当成"够长"）；空 `sources` 序列化成 `null`（其余四门 `[]`）；`sort.Slice` 非稳定排序；`top_k` 非指针分不清缺省与显式 0 | `utf8.RuneCountInString`；`make([]SourceResult, 0)`；`SliceStable`；指针 + `firstOf` |
+| Java | `/ingest` 读文件失败返回 **500**（其余四门 400）；`(int) body.get("top_k")` 遇 Long/Double 直接 ClassCastException；`question.isEmpty()` 把空串也拒了（其余四门是 200 + 空结果）；兜底文案与 score 渲染（`1.0` vs `1.0000`）不一致 | IOException → 400；安全数值转换；允许空串；`String.format(Locale.ROOT, "%.4f")` 统一渲染 |
+| Rust | 段落切分用字面 `"\n\n"`（`\n \n` 分隔符漏切，chunks 少 1）；分词用 `is_alphanumeric()`（Unicode 全集，`é` 也成词，词表与向量全部跑偏）；answer 里 f64 的 Display 把 1.0 渲染成 `1`；`Json` 提取器 400/422 分裂 | 正则 `\n\s*\n`；字符类对齐 `[a-z0-9\u4e00-\u9fff]`；`{:.4}`；手动 `from_slice` 统一 400 |
+| Python | store **不清空**（重复摄入累积，与 Rust/TS 的重建语义相反）；`top_k<1` 不校验（`results[:-1]` 静默返回"除最后一段"）；`/ingest` 只捕 `FileNotFoundError`（目录/权限错误变 500）；answer 缺行尾换行、score 不补零 | 摄入前 `chunks.clear()`；显式 400；`except OSError` → 400；格式对齐 |
+| TS-Node | 方法不匹配 404 → 405（`fastify.all`）；缺 `question` / `top_k` 非法静默出错（`undefined.toLowerCase()` 500 / `slice(0,-1)`）；answer score 不补零 | 显式校验 400；`toFixed(4)` |
+| 五门共同 | `top_k` 显式传 0 时：Go 静默按 3、Python `[:-1]`、Rust/TS 空列表、Java 0 —— 四种行为 | 统一契约：**显式 `top_k < 1` 一律 400**，缺省才是 3 |
+
+**场景 07（结构化日志，13 用例）**：契约分两层 —— HTTP 层（响应键名、`request_id` 必须是
+8 位十六进制、`count` 缺省 1000 / 非法值 400）+ **日志层**（每个端点的应用日志必须带
+级别 + 消息 + 链路字段 `requestId`/`userId`/`path` + 业务字段 `costMs`/`errorCode`/`count`，
+ERROR 行必须带错误栈）。字段路径**逐语言声明**（`P07_SPEC`）：库的命名差异不强行抹平
+（Java 的 `message`/Go 的 `msg`/Python 的 `event`/Rust 的 `fields.message`+`span.*`/
+TS 的 `msg`+`reqId`），只要求"语义字段都在、类型一致"。日志断言必须**轮询等待**
+（pino 异步落盘），且要能区分"业务日志"与"框架自动日志"（fastify 会自动打一条同名的
+`request completed`，靠 `costMs` 字段区分）。
+
+| 语言 | 偏差 | 修正 |
+|------|------|------|
+| Java | **SLF4J 的 kv 结构化参数被 logstash encoder 整个丢弃** —— `costMs`/`errorCode`/`count` 全都没进 JSON，场景的核心功能（业务字段）对 Java 静默失效 | 改 `StructuredArguments.kv(...)`（marker 形式才会被 `LogstashMarkersJsonProvider` 展平为顶层字段） |
+| Java | **`POST /error` 返回 500**（其余四门 405）：Boot 的 `BasicErrorController` 也注册在 `/error` 且不限方法，POST 被内置错误控制器接走（body 里 `status:999`） | `server.error.path=/__error` 把错误路径挪开 |
+| Java | `/debug`、`/error`、`/bench` 的 MDC 缺 `path`（或 `userId`）；"benchmark completed" 在 `MDC.clear()` **之后**才打，链路字段全丢 | MDC 补全；完成日志提前到 clear 之前 |
+| Go | **zap 生产配置默认开启采样**（`Initial:100/Thereafter:100`）：bench 打 1000 条只落盘 ~109 条，而响应里 `avgLogNs` 显示"1ms 就写完了 1000 条"——**声称值与真实值脱钩的日志版** | `cfg.Sampling = nil`（契约要求"N 条请求 → N 条日志"时采样必须关） |
+| Go | `request_id` 是 16 位（UnixNano 拼的，其余四门 8 位）；`ServeMux` 不限方法（`POST /ping` 也 200）；`count` 非法时静默按 1000 | `crypto/rand` 4 字节；显式方法检查 405；`count` 校验 400 |
+| Python | **`structlog.threadlocal` 的 `bind_threadlocal` 没有配 `merge_threadlocal` processor** —— 链路字段存了但永远不会进日志（且该模块在 structlog 24.x 已废弃） | 改用 `structlog.contextvars` + `merge_contextvars`；逐端点 `userId`；`count` 校验；stdout 行缓冲 |
+| Rust | `/debug` 用 `warn!` 且消息带后缀（级别与消息都对不上）；`count=0` 时 `as_nanos()/0` **除零 panic**；`costMs`/`totalCostMs` 是 `u128`，被 tracing 渲染成**字符串** `"0"`（其余四门是数字） | `info!` 对齐消息；`count` 校验 400；`as u64` |
+| TS-Node | **`loggerInstance` 根本不是 fastify 的选项**（v4 只有 `logger`）——键名写错被**静默忽略**，服务退回默认 logger，自定义的 `name`/`base`/`isoTime` 全丢、请求 ID 字段也从 `reqId` 变没 | 改 `logger` 传入实例 |
+| TS-Node | `/debug` 用 `warn` 级别（消息虽对、级别不符）；日志缺 `userId`/`path`；`count=abc` 时 `parseInt` 得 NaN，循环不执行、`avgLogNs` 变 `null` 蒙混过关 | 级别对齐；补字段；`Number.isInteger` 校验 400 |
+
+**方法论沉淀**：
+
+- **日志契约是"有没有人看见"的断言**：它抓到的三个缺陷（Java 丢 kv 参数、zap 采样、
+  TS 传错 logger 键名）有一个共同特征 —— **服务全部正常启动、响应全部正确**，
+  只有把"日志里必须出现什么"写成断言才会暴露。这类静默失败在端口监听级判定下
+  （甚至在看响应的契约级判定下）都看不见。
+- **"日志条数"是廉价的硬证据**：`bench?count=N` → 必须恰好 N 条 entry 日志。
+  它同时证明了"日志真的逐条写了"和"没有被采样/缓冲吞掉"。
+- **逐语言声明预期，不强行抹平**：日志字段名、级别表示（`"INFO"`/`"info"`/`30`）
+  因库而异，契约按语言给路径表；但**语义字段的集合与类型**必须一致。
+- **同名消息要能区分来源**：框架自动日志与业务日志撞消息时，用"必须含某字段"过滤。
+
+**三个反向对照实验**（证明断言有牙齿，均已还原）：
+
+| 实验 | 改动 | 结果 |
+|------|------|------|
+| 06/Go 去掉 store 重建 | 注释掉 `chunks = make(...)` | `chunks_loaded 8≠2`、旧文档 sources 泄漏到新查询 ✅ 被抓 |
+| 07/Go 恢复 zap 采样 | `cfg.Sampling = &zap.SamplingConfig{...}` | `'benchmark log entry' 只有 89 条（期望 1000）` ✅ 被抓 |
+| 07/TS 传错 logger 键名 | 改回 `loggerInstance` | 全部日志用例失败（默认 logger 的字段路径不匹配） ✅ 被抓 |
+
+批次 3 结果：`python3 .wb_verify/verify_all.py 06 07` → **10/10 全绿**（归档见 `.wb_verify/runs/20261017-102857_sub-06_07.md`）。

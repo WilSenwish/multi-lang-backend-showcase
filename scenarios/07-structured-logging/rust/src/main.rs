@@ -14,12 +14,14 @@
 //! - Span 树可视化（tracing-viewer）是一大优势
 
 use axum::{
+    http::StatusCode,
+    response::{IntoResponse, Response},
     routing::get,
     Router,
 };
 use serde::Serialize;
 use std::time::Instant;
-use tracing::{error, info, info_span, warn};
+use tracing::{error, info, info_span};
 use tracing_subscriber::{fmt, EnvFilter};
 use uuid::Uuid;
 
@@ -34,7 +36,8 @@ async fn ping() -> impl axum::response::IntoResponse {
     let _guard = span.enter();
 
     info!("ping request handled");
-    info!(costMs = start.elapsed().as_millis(), "request completed");
+    // as u64：u128 会被 tracing 的 JSON 渲染成字符串 "0"，与其余四门的数字类型不一致
+    info!(costMs = start.elapsed().as_millis() as u64, "request completed");
 
     axum::Json(serde_json::json!({"pong": true, "request_id": request_id}))
 }
@@ -44,9 +47,9 @@ async fn debug() -> impl axum::response::IntoResponse {
     let span = info_span!("debug_handler", requestId = %request_id, userId = "debug-user", path = "/debug");
     let _guard = span.enter();
 
-    // tracing 没有 debug! 宏自动级别限制，EnvFilter 可以过滤
-    // 但 Rust tracing 默认 INFO 级别以上才输出
-    warn!("debug endpoint hit (WARN level visible even with INFO filter)");
+    // 消息与级别与其余四门对齐：INFO "debug endpoint hit"
+    // （之前用 warn! 且消息带后缀，跨语言不一致）
+    info!("debug endpoint hit");
 
     axum::Json(serde_json::json!({"debug": true, "request_id": request_id}))
 }
@@ -75,8 +78,16 @@ async fn error_endpoint() -> impl axum::response::IntoResponse {
     axum::Json(serde_json::json!({"error": "simulated"}))
 }
 
-async fn bench(axum::extract::Query(params): axum::extract::Query<BenchParams>) -> impl axum::response::IntoResponse {
-    let count = params.count;
+async fn bench(axum::extract::Query(params): axum::extract::Query<BenchParams>) -> Response {
+    // count 缺省 1000；非数字 / < 1 都是客户端错误 → 400
+    // （之前 count=0 会在这里做除零 panic，直接被连接重置）
+    let count = match params.count {
+        None => 1000,
+        Some(0) => {
+            return (StatusCode::BAD_REQUEST, "count must be >= 1").into_response();
+        }
+        Some(n) => n,
+    };
     let request_id = Uuid::new_v4().to_string()[..8].to_string();
     let span = info_span!("bench_handler", requestId = %request_id, userId = "bench-user", path = "/bench");
     let _guard = span.enter();
@@ -88,7 +99,7 @@ async fn bench(axum::extract::Query(params): axum::extract::Query<BenchParams>) 
     let cost = start.elapsed();
     let avg_ns = cost.as_nanos() / count as u128;
 
-    info!(count = count, totalCostMs = cost.as_millis(), avgLogNs = avg_ns as u64, "benchmark completed");
+    info!(count = count, totalCostMs = cost.as_millis() as u64, avgLogNs = avg_ns as u64, "benchmark completed");
 
     axum::Json(serde_json::json!({
         "count": count,
@@ -96,11 +107,13 @@ async fn bench(axum::extract::Query(params): axum::extract::Query<BenchParams>) 
         "avg_log_ns": avg_ns as u64,
         "request_id": request_id,
     }))
+    .into_response()
 }
 
 #[derive(serde::Deserialize)]
 struct BenchParams {
-    count: u32,
+    /// 缺省 None → 1000；显式传值（含 0）必须 >= 1
+    count: Option<u32>,
 }
 
 // ==================== main ====================

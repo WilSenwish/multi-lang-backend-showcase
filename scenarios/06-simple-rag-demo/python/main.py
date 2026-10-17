@@ -15,7 +15,9 @@ from pathlib import Path
 from typing import List, Dict, Optional
 from collections import defaultdict
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 app = FastAPI(title="simple-rag-python", version="1.0.0")
@@ -47,6 +49,9 @@ class RagStore:
 
         content = p.read_text(encoding="utf-8")
         file_name = p.name
+
+        # 每次摄入重建 store（与 Go/Java/Rust/TS 一致：最后一次摄入的文档生效）
+        self.chunks.clear()
 
         # 按空行切段落
         paragraphs = re.split(r"\n\s*\n", content)
@@ -140,10 +145,11 @@ store = RagStore()
 def mock_answer(question: str, sources: List[Dict]) -> str:
     if not sources:
         return "我没有找到相关信息，请先 POST /ingest 摄入文档。"
-    lines = [f"根据摄入的文档，关于「{question}」的相关内容：\n"]
+    # 答案格式与其余四门逐字节一致：头部 + 每行一条来源（行尾带换行、相关度固定 4 位小数）
+    out = f"根据摄入的文档，关于「{question}」的相关内容：\n\n"
     for i, s in enumerate(sources):
-        lines.append(f"{i + 1}. (来自 {s['source']}, 相关度 {s['score']}) {s['text']}")
-    return "\n".join(lines)
+        out += f"{i + 1}. (来自 {s['source']}, 相关度 {s['score']:.4f}) {s['text']}\n"
+    return out
 
 
 # ==================== API 模型 ====================
@@ -159,11 +165,20 @@ class AskReq(BaseModel):
 
 # ==================== 端点 ====================
 
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request, exc: RequestValidationError):
+    """把 pydantic 的 422 统一改写为 400（与其余四门一致：请求体缺字段/类型错都算客户端错误）"""
+    return JSONResponse(status_code=400, content={"success": False, "error": "参数校验失败"})
+
+
 @app.post("/ingest")
 def ingest(req: IngestReq):
     try:
         chunks = store.ingest_file(req.file_path)
     except FileNotFoundError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except OSError as e:
+        # 目录/权限等读失败同样是客户端给的 path 不对 → 400（与 Java/Rust/TS 一致）
         raise HTTPException(status_code=400, detail=str(e))
 
     return {
@@ -177,6 +192,9 @@ def ingest(req: IngestReq):
 
 @app.post("/ask")
 def ask(req: AskReq):
+    # top_k 必须 >= 1（0/负数对其他语言分别是 panic / 截断异常，统一按 400 拒绝）
+    if req.top_k < 1:
+        raise HTTPException(status_code=400, detail="top_k 必须 >= 1")
     sources = store.search(req.question, req.top_k)
     answer = mock_answer(req.question, sources)
 

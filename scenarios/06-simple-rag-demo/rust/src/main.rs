@@ -7,17 +7,18 @@
 //! 4. Result 强制错误处理，不会漏异常
 
 use axum::{
-    extract::{Query, State, Json as AxumJson},
+    body::Bytes,
+    extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
-    Router,
+    Json as AxumJson, Router,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 // ==================== 数据结构 ====================
 
@@ -57,12 +58,14 @@ impl RagStore {
             .unwrap_or("unknown")
             .to_string();
 
-        // 按空行切段落
+        // 按空行切段落（与 Go/Python/Java/TS 同款正则：\n\s*\n，
+        // 之前的 "\n\n" 字面切分会把 "\n \n" 这类分隔符漏掉，导致 chunk 数不一致）
+        let para_re = para_split_re();
         let mut chunks = self.chunks.lock().unwrap();
         chunks.clear();
 
         let mut idx = 0;
-        for para in content.split("\n\n") {
+        for para in para_re.split(&content) {
             let trimmed = para.trim();
             if trimmed.chars().count() < 10 {
                 continue;
@@ -152,13 +155,21 @@ impl RagStore {
 
 // ==================== 辅助函数 ====================
 
+/// 段落切分正则（进程内只编译一次）
+fn para_split_re() -> &'static regex::Regex {
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(r"\n\s*\n").unwrap())
+}
+
 fn tokenize(text: &str) -> Vec<String> {
     let lower = text.to_lowercase();
     let mut tokens = Vec::new();
     let mut current = String::new();
 
+    // 字符类与其余四门的正则 [^a-z0-9\u4e00-\u9fff] 严格对齐：
+    // 之前的 is_alphanumeric() 是 Unicode 全集（é/Ω 等都算），会把词表与向量算得不一样
     for ch in lower.chars() {
-        if ch.is_alphanumeric() || ('\u{4e00}'..='\u{9fff}').contains(&ch) {
+        if ch.is_ascii_alphanumeric() || ('\u{4e00}'..='\u{9fff}').contains(&ch) {
             current.push(ch);
         } else {
             if current.chars().count() >= 2 {
@@ -204,8 +215,10 @@ fn mock_answer(question: &str, sources: &[SourceResult]) -> String {
     }
     let mut sb = format!("根据摄入的文档，关于「{}」的相关内容：\n\n", question);
     for (i, s) in sources.iter().enumerate() {
+        // {:.4} 与 Go 的 %.4f / Python 的 :.4f / TS 的 toFixed(4) / Java 的 %.4f 对齐
+        // （f64 默认 Display 会把 1.0 渲染成 "1"，与其余四门不一致）
         sb.push_str(&format!(
-            "{}. (来自 {}, 相关度 {}) {}\n",
+            "{}. (来自 {}, 相关度 {:.4}) {}\n",
             i + 1,
             s.source,
             s.score,
@@ -225,12 +238,18 @@ struct IngestReq {
 #[derive(Deserialize)]
 struct AskReq {
     question: String,
-    #[serde(default = "default_topk")]
-    top_k: usize,
+    /// 缺省 None → 默认 3；显式传值（含 0）必须 >= 1，与其余四门一致
+    #[serde(default)]
+    top_k: Option<usize>,
 }
 
-fn default_topk() -> usize {
-    3
+/// 400 响应（统一契约：畸形 JSON / 缺字段 / 类型错误 / 非法值都走这里）
+fn bad_request(msg: &str) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        AxumJson(serde_json::json!({"success": false, "error": msg})),
+    )
+        .into_response()
 }
 
 #[derive(Serialize, Clone)]
@@ -244,7 +263,14 @@ struct SourceResult {
 
 type AppState = std::sync::Arc<RagStore>;
 
-async fn ingest(State(store): State<AppState>, AxumJson(req): AxumJson<IngestReq>) -> Response {
+async fn ingest(State(store): State<AppState>, body: Bytes) -> Response {
+    // 手动解析而非 axum 的 Json 提取器：后者对"语法错误"给 400、对"类型错误"给 422，
+    // 与其余四门不一致；这里统一映射为 400（契约：非法入参一律 400）。
+    let req: IngestReq = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return bad_request(&format!("invalid request body: {e}")),
+    };
+
     match store.ingest_file(&req.file_path) {
         Ok(chunks) => {
             let vocab_size = store.vocab_size();
@@ -258,15 +284,24 @@ async fn ingest(State(store): State<AppState>, AxumJson(req): AxumJson<IngestReq
             .into_response()
         }
         Err(e) => {
-            let mut resp = AxumJson(serde_json::json!({"success": false, "error": e})).into_response();
-            *resp.status_mut() = StatusCode::BAD_REQUEST;
-            resp
+            // 文件不存在/是目录/权限问题都是客户端给的 path 不对 → 400
+            bad_request(&e)
         }
     }
 }
 
-async fn ask(State(store): State<AppState>, AxumJson(req): AxumJson<AskReq>) -> Response {
-    let sources = store.search(&req.question, req.top_k);
+async fn ask(State(store): State<AppState>, body: Bytes) -> Response {
+    let req: AskReq = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return bad_request(&format!("invalid request body: {e}")),
+    };
+    let top_k = match req.top_k {
+        None => 3,
+        Some(k) if k >= 1 => k,
+        Some(_) => return bad_request("top_k must be >= 1"),
+    };
+
+    let sources = store.search(&req.question, top_k);
     let answer = mock_answer(&req.question, &sources);
 
     AxumJson(serde_json::json!({
