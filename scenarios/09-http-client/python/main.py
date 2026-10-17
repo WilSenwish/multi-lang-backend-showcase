@@ -3,23 +3,25 @@
 
 Python HTTP Client 特点：
 1. httpx（比 requests 好，支持 async + 连接池 + 超时粒度）
-2. tenacity（重试/退避，装饰器写法）
+2. 重试：**手动指数退避循环** —— 因为重试次数来自请求体 retry_times（逐请求可变），
+   tenacity 的 stop 条件也可以动态化，但装饰器写法在"读响应体后再决定是否重试"
+   （5xx 也要消费 body）时不如裸循环直观；requirements 里的 tenacity 仅作备选
 3. httpx.Client 默认连接池，max_keepalive_connections 配置
 4. httpx.Timeout(connect=3.0, read=10.0, write=10.0) 分开配置
-5. 熔断：pybreaker 或手动实现
+5. 熔断：手动实现（阈值 3 次连续失败 → open，10s 后半开）
 
 和 Java/Go 对比：
 - httpx 原生 async（httpx.AsyncClient），比 requests 强
-- tenacity 装饰器写重试代码最简洁
 - Python 全局 GIL 不阻塞 IO 密集（httpx 用纯 Python 实现异步）
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 import time
 import math
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional, Callable
 
 import httpx
@@ -56,7 +58,10 @@ def _run_mock_server():
             else:
                 self._send(404, '{"error":"not found"}')
 
-    server = HTTPServer(("127.0.0.1", MOCK_PORT), Handler)
+    # ThreadingHTTPServer：/slow 的 2s 睡眠发生在服务端线程里，
+    # 单线程版会让后续请求排在睡眠后面（超时只中断了客户端，服务端仍在睡），
+    # 把毫不相关的请求延迟放大到 2s —— 契约的耗时下界会被这种串扰污染。
+    server = ThreadingHTTPServer(("127.0.0.1", MOCK_PORT), Handler)
     print(f"[Python MockServer] starting on http://localhost:{MOCK_PORT}")
     server.serve_forever()
 
@@ -114,14 +119,16 @@ class CallReq(BaseModel):
 async def call_external(req: CallReq):
     import asyncio
 
-    # 熔断检查
+    # 熔断检查（响应键集合与"重试耗尽"分支保持一致，见模块底部说明）
     if not cb.allow():
         return {
             "success": False,
             "error": "CIRCUIT_OPEN: 熔断中",
             "status_code": 0,
             "latency_ms": 0,
+            "retries": 0,
             "url": req.url,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
 
     # 超时配置（分开：连接 3s / 读取 10s / 整体 timeout_ms）
@@ -140,6 +147,7 @@ async def call_external(req: CallReq):
     start = time.time()
     max_attempts = req.retry_times + 1
     last_error = None
+    last_status = 0  # 最后一次尝试拿到的 HTTP 状态码（网络错误时为 0）
 
     async with httpx.AsyncClient(timeout=client_timeout, transport=transport) as client:
         for attempt in range(max_attempts):
@@ -150,13 +158,14 @@ async def call_external(req: CallReq):
             try:
                 print(f"[HTTP-CLIENT] → GET {req.url} (attempt {attempt + 1})")
                 resp = await client.get(req.url)
+                last_status = resp.status_code
 
                 # 5xx 重试
                 if resp.status_code >= 500:
                     last_error = f"HTTP {resp.status_code}"
                     if attempt < req.retry_times:
                         continue
-                    break
+                    break  # 最后一次也失败 → 统一失败路径
 
                 latency = int((time.time() - start) * 1000)
                 cb.record_success()
@@ -178,23 +187,26 @@ async def call_external(req: CallReq):
                 }
 
             except httpx.TimeoutException as e:
-                last_error = f"TIMEOUT: {e}"
+                last_error = f"TIMEOUT: {type(e).__name__}"
+                last_status = 0
                 if attempt < req.retry_times:
                     continue
             except httpx.RequestError as e:
-                last_error = f"REQUEST_ERROR: {e}"
+                last_error = f"REQUEST_ERROR: {type(e).__name__}: {e}"
+                last_status = 0
                 if attempt < req.retry_times:
                     continue
 
-    # 全部失败
+    # 全部失败（网络错误或最后一次 5xx）—— 5xx 时 status_code 必须是真实状态码（README 统一接口）
     cb.record_failure()
     return {
         "success": False,
-        "status_code": 0,
+        "status_code": last_status,
         "latency_ms": int((time.time() - start) * 1000),
         "retries": req.retry_times,
         "error": str(last_error),
         "url": req.url,
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
 
 

@@ -104,22 +104,56 @@ impl CircuitBreaker {
 
 // ==================== 请求/响应模型 ====================
 
+fn default_url() -> String {
+    format!("http://localhost:{MOCK_PORT}/ok")
+}
+fn default_timeout_ms() -> u64 {
+    5000
+}
+fn default_retry_times() -> u32 {
+    2 // 总尝试次数 = retry_times + 1
+}
+
 #[derive(Deserialize)]
 struct CallReq {
+    // serde(default)：缺字段时用默认值。不用 Option 是因为 axum::Json 对缺字段
+    // 直接 422，而其他四门语言都接受"只传部分字段"的请求体（README 统一接口）。
+    #[serde(default = "default_url")]
     url: String,
+    #[serde(default = "default_timeout_ms")]
     timeout_ms: u64,
+    #[serde(default = "default_retry_times")]
     retry_times: u32,
 }
 
+// 响应键集合分三种形态（跨语言统一契约，与 Go/Python/TS/Java 逐字段一致）：
+//   成功      {status_code, latency_ms, retries, success, body_preview, url, timestamp}
+//   重试耗尽  {status_code, latency_ms, retries, success, error, url, timestamp}
+//   熔断中    {status_code:0, latency_ms:0, retries:0, success:false, error:"CIRCUIT_OPEN: 熔断中", url, timestamp}
+// Option 字段必须 skip_serializing_if：否则成功响应会多个 error:null、
+// 失败响应会多个 body_preview:null，键集合与其他语言对不上。
 #[derive(Serialize, Default)]
 struct CallResp {
     success: bool,
     status_code: u16,
     latency_ms: u128,
     retries: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     body_preview: Option<serde_json::Value>,
     url: String,
+    timestamp: String,
+}
+
+impl CallResp {
+    fn new(url: String) -> Self {
+        Self {
+            url,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            ..Default::default()
+        }
+    }
 }
 
 // ==================== HTTP Client 核心 ====================
@@ -131,7 +165,7 @@ async fn call_handler(
     axum::Json(req): axum::Json<CallReq>,
 ) -> Response {
     let url = if req.url.is_empty() {
-        format!("http://localhost:{MOCK_PORT}/ok")
+        default_url()
     } else {
         req.url.clone()
     };
@@ -140,10 +174,9 @@ async fn call_handler(
 
     // 熔断检查
     if !cb.allow() {
-        let mut resp = CallResp::default();
+        let mut resp = CallResp::new(url);
         resp.success = false;
         resp.error = Some("CIRCUIT_OPEN: 熔断中".into());
-        resp.url = url;
         return axum::Json(resp).into_response();
     }
 
@@ -154,10 +187,9 @@ async fn call_handler(
     {
         Ok(c) => c,
         Err(e) => {
-            let mut resp = CallResp::default();
+            let mut resp = CallResp::new(url);
             resp.success = false;
             resp.error = Some(format!("client build failed: {e}"));
-            resp.url = url;
             return axum::Json(resp).into_response();
         }
     };
@@ -187,10 +219,22 @@ async fn call_handler(
             Ok(resp) => {
                 let code = resp.status().as_u16();
 
-                // 5xx 重试
-                if code >= 500 && attempt < max_attempts - 1 {
+                // 5xx 重试；最后一次也失败时按"重试耗尽"语义返回真实状态码
+                // （README 统一接口：重试 2 次后 status_code=500），且必须记熔断失败 ——
+                // 老代码在这里落进成功分支，把 500 记成 success，熔断器永远打不开。
+                if code >= 500 {
                     last_error = Some(format!("HTTP {code}"));
-                    continue;
+                    if attempt < max_attempts - 1 {
+                        continue;
+                    }
+                    cb.record_failure();
+                    let mut r = CallResp::new(url.clone());
+                    r.success = false;
+                    r.status_code = code;
+                    r.latency_ms = start.elapsed().as_millis();
+                    r.retries = attempt;
+                    r.error = last_error;
+                    return axum::Json(r).into_response();
                 }
 
                 let latency = start.elapsed().as_millis();
@@ -207,6 +251,7 @@ async fn call_handler(
                     error: None,
                     body_preview: body,
                     url: url.clone(),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
                 });
                 break;
             }
@@ -225,12 +270,11 @@ async fn call_handler(
         Some(r) => axum::Json(r).into_response(),
         None => {
             cb.record_failure();
-            let mut resp = CallResp::default();
+            let mut resp = CallResp::new(url);
             resp.success = false;
             resp.latency_ms = final_latency;
             resp.retries = attempts_made.saturating_sub(1);
             resp.error = Some(last_error.unwrap_or_else(|| "unknown error".into()));
-            resp.url = url;
             axum::Json(resp).into_response()
         }
     }

@@ -151,26 +151,35 @@ var globalConfig *AppConfig
 func configHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 
-	// 脱敏密码
-	type RespConfig struct {
-		Server   ServerConfig   `json:"server"`
-		Database DatabaseConfig `json:"database"`
-		Logging  LoggingConfig  `json:"logging"`
-		Env      string         `json:"env"`
-		Source   string         `json:"source"`
-	}
-	resp := RespConfig{
-		Server:   globalConfig.Server,
-		Logging:  globalConfig.Logging,
-		Env:      globalConfig.Env,
-		Source:   globalConfig.Source,
-	}
-	resp.Database = DatabaseConfig{
-		URL:      globalConfig.Database.URL,
-		User:     globalConfig.Database.User,
-		Password: "********", // 脱敏
-		PoolSize: globalConfig.Database.PoolSize,
-	}
+// 响应专用结构体：不能直接用 DatabaseConfig —— 它的 Password 带 `json:"-"`，
+// 会把脱敏值一起吞掉（响应里直接少了 password 键，与其他四门语言不一致）。
+type DatabaseResp struct {
+	URL      string `json:"url"`
+	User     string `json:"user"`
+	Password string `json:"password"`
+	PoolSize int    `json:"pool_size"`
+}
+
+// 脱敏密码
+type RespConfig struct {
+	Server   ServerConfig  `json:"server"`
+	Database DatabaseResp  `json:"database"`
+	Logging  LoggingConfig `json:"logging"`
+	Env      string        `json:"env"`
+	Source   string        `json:"source"`
+}
+resp := RespConfig{
+	Server:   globalConfig.Server,
+	Logging:  globalConfig.Logging,
+	Env:      globalConfig.Env,
+	Source:   globalConfig.Source,
+}
+resp.Database = DatabaseResp{
+	URL:      globalConfig.Database.URL,
+	User:     globalConfig.Database.User,
+	Password: "********", // 脱敏
+	PoolSize: globalConfig.Database.PoolSize,
+}
 
 	json.NewEncoder(w).Encode(resp)
 }

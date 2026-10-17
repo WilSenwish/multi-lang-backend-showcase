@@ -14,7 +14,11 @@
  * - 但 CPU 密集计算（重试中的 backoff 延迟）会阻塞事件循环
  */
 import Fastify from 'fastify';
-import { request, Agent, Pool, fetch as undiciFetch } from 'undici';
+// ⚠️ 必须起别名：路由处理器形参名叫 request（fastify 约定），
+// 直接 import { request } 会被形参遮蔽，调用时抛 "request2 is not a function"，
+// 于是每个 /call-external 都瞬间失败 —— 老代码全量请求 100% 报错，
+// 而"端口监听级"验证根本发现不了（服务是正常起来的）。
+import { request as undiciRequest, Agent, Pool, fetch as undiciFetch } from 'undici';
 
 const PORT = 8119;
 const MOCK_PORT = 8204;
@@ -112,6 +116,16 @@ interface CallResponse {
 
 // ==================== HTTP Client 核心 ====================
 
+// undici 对连接拒绝等错误抛的是 AggregateError（message 为空），
+// 直接取 err.message 只能拿到 "AggregateError" —— 展平出内层原因才有诊断价值。
+function describeError(err: any): string {
+  if (err instanceof AggregateError && Array.isArray((err as any).errors)) {
+    const inner = (err as any).errors.map((e: any) => e?.message || String(e)).join('; ');
+    if (inner) return inner;
+  }
+  return err?.cause?.message || err?.message || String(err);
+}
+
 const fastify = Fastify({ logger: true });
 
 // undici Pool：连接池（每个主机）
@@ -122,9 +136,11 @@ const pool = new Pool(`http://localhost:${MOCK_PORT}`, {
 
 fastify.post<{ Body: CallBody }>('/call-external', async (request) => {
   const reqBody = request.body || {};
-  const url = reqBody.url || `http://localhost:${MOCK_PORT}/ok`;
-  const timeoutMs = reqBody.timeout_ms || 5000;
-  const maxRetries = reqBody.retry_times || 2;
+  // 显式 undefined 检查而不是 ||：timeout_ms=0 / retry_times=0 是合法值，
+  // || 会把"显式 0"吞成默认值（其他四门语言都接受 0）。
+  const url = reqBody.url ?? `http://localhost:${MOCK_PORT}/ok`;
+  const timeoutMs = reqBody.timeout_ms ?? 5000;
+  const maxRetries = reqBody.retry_times ?? 2;
 
   const resp: CallResponse = {
     success: false,
@@ -155,41 +171,61 @@ fastify.post<{ Body: CallBody }>('/call-external', async (request) => {
     console.log(`[HTTP-CLIENT] → GET ${url} (attempt ${attempt + 1})`);
 
     try {
-      const { statusCode, body } = await request(url, {
-        method: 'GET',
-        headersTimeout: 3000,    // 连接超时
-        bodyTimeout: timeoutMs,   // 读取超时（整个响应体）
-        requestTimeout: timeoutMs + 1000, // 整体超时
-      });
-
-      const text = await body.text();
-      let bodyPreview: any = text.slice(0, 200);
+      // undici 自带的 headersTimeout/bodyTimeout 走"快定时器"（RESOLUTION_MS=1000，
+      // 每 ~499ms 才 tick 一次，官方定位是"1 秒以上的粗粒度定时器"）——
+      // 传 500ms 实测要 ~1000ms 才触发，比请求级 deadline 还慢。
+      // 因此 deadline 用 AbortSignal 精确控制（与 Go 的 context 超时、
+      // Rust 的 .timeout() 语义一致：整个请求的总时限）。
+      const controller = new AbortController();
+      const deadline = setTimeout(() => controller.abort(), timeoutMs);
       try {
-        bodyPreview = JSON.parse(text);
-      } catch { /* 保持 string */ }
+        const { statusCode, body } = await undiciRequest(url, {
+          method: 'GET',
+          signal: controller.signal,
+        });
 
-      // 5xx 重试
-      if (statusCode >= 500 && attempt < maxRetries) {
-        lastError = `HTTP ${statusCode}`;
-        continue;
+        const text = await body.text();
+        let bodyPreview: any = text.slice(0, 200);
+        try {
+          bodyPreview = JSON.parse(text);
+        } catch { /* 保持 string */ }
+
+        // 5xx 重试；最后一次也失败时按"重试耗尽"语义返回真实状态码
+        // （README 统一接口：重试 2 次后 status_code=500），并记熔断失败 ——
+        // 老代码在 5xx 终局既不设 error 也不记失败，熔断器永远打不开。
+        if (statusCode >= 500) {
+          lastError = `HTTP ${statusCode}`;
+          if (attempt < maxRetries) continue;
+          cb.recordFailure();
+          resp.success = false;
+          resp.status_code = statusCode;
+          resp.latency_ms = Date.now() - start;
+          resp.retries = attempt;
+          resp.error = lastError;
+          return resp;
+        }
+
+        const latency = Date.now() - start;
+
+        if (statusCode < 400) {
+          cb.recordSuccess();
+        }
+
+        resp.success = statusCode < 400;
+        resp.status_code = statusCode;
+        resp.latency_ms = latency;
+        resp.retries = attempt;
+        resp.body_preview = bodyPreview;
+        return resp;
+      } finally {
+        clearTimeout(deadline);
       }
-
-      const latency = Date.now() - start;
-
-      if (statusCode < 400) {
-        cb.recordSuccess();
-      }
-
-      resp.success = statusCode < 400;
-      resp.status_code = statusCode;
-      resp.latency_ms = latency;
-      resp.retries = attempt;
-      resp.body_preview = bodyPreview;
-      return resp;
 
     } catch (err: any) {
-      lastError = err.message || String(err);
-      if (attempt >= maxRetries - 1) {
+      lastError = describeError(err);
+      // 只在"最后一次尝试"退出：老代码写 attempt >= maxRetries - 1，
+      // retry_times=1 时第一次失败就 break，实际只发了 1 次请求却报告 retries=1。
+      if (attempt >= maxAttempts - 1) {
         break;
       }
     }

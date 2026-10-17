@@ -76,8 +76,8 @@ SCENARIOS = [
     {"name":"05-unit-test-mock","kind":"test"},
     {"name":"06-simple-rag-demo","kind":"contract","ports":{"java":8100,"go":8101,"python":8102,"rust":8103,"ts-node":8104}},
     {"name":"07-structured-logging","kind":"contract","ports":{"java":8105,"go":8106,"python":8107,"rust":8108,"ts-node":8109}},
-    {"name":"08-config-management","kind":"http","ports":{"java":8110,"go":8111,"python":8112,"rust":8113,"ts-node":8114}},
-    {"name":"09-http-client","kind":"http","ports":{"java":8115,"go":8116,"python":8117,"rust":8118,"ts-node":8119}},
+    {"name":"08-config-management","kind":"contract","ports":{"java":8110,"go":8111,"python":8112,"rust":8113,"ts-node":8114}},
+    {"name":"09-http-client","kind":"contract","ports":{"java":8115,"go":8116,"python":8117,"rust":8118,"ts-node":8119}},
     {"name":"10-rate-limit","kind":"http","ports":{"java":8120,"go":8121,"python":8122,"rust":8123,"ts-node":8124}},
     {"name":"11-db-crud-pool","kind":"http","ports":{"java":8125,"go":8126,"python":8127,"rust":8128,"ts-node":8129}},
     {"name":"12-graceful-shutdown","kind":"graceful","ports":{"java":8130,"go":8131,"python":8132,"rust":8133,"ts-node":8134}},
@@ -2063,6 +2063,309 @@ def verify_07(lang, port, d, log):
 
 # kind == "contract" 的场景注册表。SCENARIOS 定义在文件顶部，这里用名字查表
 # （而不是在 SCENARIOS 里直接引用函数）以避免前向引用。
+# ================= 场景 08：多环境配置管理 =================
+# 契约（README 记载的行为 + 显式化的跨语言差异）：
+#   GET /config → 200 精确 JSON：server{port,host}/database{url,user,password 脱敏,pool_size}/
+#     logging{level,json}/env/source。其中：
+#     - server.port 必须等于服务实际监听端口（"配置声称的端口" = "真实端口"）；
+#     - password 一律脱敏为 "********"（Go 曾因 json:"-" 把整个键吞掉）；
+#     - env 缺省值逐语言声明：Java/Python/TS="default"，Go/Rust=""（语言生态差异，不抹平）；
+#     - source 是各语言固定的配置来源描述字符串，逐语言精确比对。
+#   env 覆盖：MYAPP_ENV + 数据库 url + 日志级别 + pool_size。
+#     env 必须**压过配置文件**（Go 的 config-prod.yaml 里 url 是 prod-db-cluster:3306，
+#     被 env 覆盖成才说明优先级正确）。分隔符逐语言：Java/Go 单下划线，Python/Rust/TS 双下划线。
+#   非法配置必须 fail-fast：logging.level=BOGUS → 端口自始至终不得监听。
+P08_SPEC = {
+    # env_default: MYAPP_ENV 缺省时 env 字段的值
+    # url_env/level_env/pool_env: 该语言的 env 覆盖键名（分隔符差异）
+    # source: /config 响应中固定的配置来源描述
+    "java":    {"env_default": "default", "url_env": "MYAPP_DATABASE_URL",
+                "level_env": "MYAPP_LOGGING_LEVEL", "pool_env": "MYAPP_DATABASE_POOL_SIZE",
+                "source": "Spring Boot @ConfigurationProperties + application.yml"},
+    "go":      {"env_default": "", "url_env": "MYAPP_DATABASE_URL",
+                "level_env": "MYAPP_LOGGING_LEVEL", "pool_env": "MYAPP_DATABASE_POOL_SIZE",
+                "source": "viper + config.yaml + MYAPP_ env"},
+    "python":  {"env_default": "default", "url_env": "MYAPP_DATABASE__URL",
+                "level_env": "MYAPP_LOGGING__LEVEL", "pool_env": "MYAPP_DATABASE__POOL_SIZE",
+                "source": "pydantic-settings + config.yaml + MYAPP_ env"},
+    "rust":    {"env_default": "", "url_env": "MYAPP_DATABASE__URL",
+                "level_env": "MYAPP_LOGGING__LEVEL", "pool_env": "MYAPP_DATABASE__POOL_SIZE",
+                "source": "config crate + config.yaml + MYAPP_ env (__ 分隔)"},
+    "ts-node": {"env_default": "default", "url_env": "MYAPP_DATABASE__URL",
+                "level_env": "MYAPP_LOGGING__LEVEL", "pool_env": "MYAPP_DATABASE__POOL_SIZE",
+                "source": "zod + @fastify/env + dotenv + MYAPP_ env"},
+}
+# POST /config 的状态码逐语言声明：框架的方法路由语义不同
+# （Spring/FastAPI/axum 405；Go ServeMux 不限方法 200；fastify 未注册则 404）。
+P08_METHOD_STATUS = {"java": 405, "go": 200, "python": 405, "rust": 405, "ts-node": 404}
+
+
+def _p08_env(extra=None):
+    """基线环境：全局 ENV 去掉所有 MYAPP_*（避免外部污染），再叠加额外覆盖。"""
+    env = {k: v for k, v in ENV.items() if not k.startswith("MYAPP_")}
+    env.update(extra or {})
+    return env
+
+
+def _p08_cases_baseline(sp, lang, port):
+    def cfg_assert(status, headers, body, fails, label):
+        # exact=True：键集合 + 每个字段逐项比对。server.port 用实际监听端口，
+        # 把"配置里声称的端口"和"服务真正绑定的端口"钉在一起。
+        expect = {
+            "server": {"port": port, "host": "0.0.0.0"},
+            "database": {"url": "localhost:3306", "user": "admin",
+                         "password": "********", "pool_size": 10},
+            "logging": {"level": "INFO", "json": True},
+            "env": sp["env_default"],
+            "source": sp["source"],
+        }
+        fails += ["[%s] %s" % (label, e) for e in json_match(expect, body, exact=True)]
+
+    return [
+        {"name": "GET /config 基线契约", "method": "GET", "path": "/config", "status": 200,
+         "content_type": "application/json", "assert": cfg_assert},
+        {"name": "POST /config（方法语义逐语言声明）", "method": "POST", "path": "/config",
+         "status": P08_METHOD_STATUS[lang]},
+        {"name": "未匹配路径 → 404", "method": "GET", "path": "/nope", "status": 404},
+    ]
+
+
+def _p08_cases_override(sp):
+    def cfg_assert(status, headers, body, fails, label):
+        # exact=False：只断言被覆盖的字段 + 脱敏。env 压过文件是核心：
+        # Go 在 MYAPP_ENV=prod 时会读 config-prod.yaml（url=prod-db-cluster:3306，
+        # pool_size=20），env 必须赢过文件才说明优先级正确。
+        expect = {
+            "env": "prod",
+            "database": {"url": "prod-db:3306", "pool_size": 30, "password": "********"},
+            "logging": {"level": "DEBUG"},
+        }
+        fails += ["[%s] %s" % (label, e) for e in json_match(expect, body, exact=False)]
+
+    return [
+        {"name": "GET /config env 覆盖（env > 文件）", "method": "GET", "path": "/config",
+         "status": 200, "assert": cfg_assert},
+    ]
+
+
+def _p08_negative(lang, port, d, log, sp):
+    """非法配置必须 fail-fast：整个窗口内端口都不得监听。
+    不判断"包装进程是否退出"——tsx watch / mvn 的包装进程会在子进程崩溃后滞留，
+    端口是否释放才是可靠判据（与场景 12 的判定口径一致）。"""
+    env = _p08_env({sp["level_env"]: "BOGUS"})
+    free_port(port)
+    with open(log, "a") as lf:
+        proc = subprocess.Popen(start_cmd(lang, port, "http", d), cwd=d, env=env,
+                                stdout=lf, stderr=subprocess.STDOUT, start_new_session=True)
+    try:
+        listened = poll_listen(port, 60 if lang == "java" else 25)
+        if listened:
+            return False, ("logging.level=BOGUS 非法但服务仍监听 %d（启动校验失效）" % port
+                           + "\n" + tail(log, 8))
+        return True, "非法 level 被启动校验拒绝，端口未监听（fail-fast）"
+    finally:
+        kill_tree(proc)
+        subprocess.run(["pkill", "-9", "-f", os.path.join("scenarios", "08-config-management")],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(1)
+
+
+def verify_08(lang, port, d, log):
+    sp = P08_SPEC[lang]
+    ok1, msg1 = verify_cases(lang, port, d, log, _p08_cases_baseline(sp, lang, port),
+                             env=_p08_env())
+    ok2, msg2 = verify_cases(lang, port, d, log, _p08_cases_override(sp),
+                             env=_p08_env({"MYAPP_ENV": "prod",
+                                           sp["url_env"]: "prod-db:3306",
+                                           sp["level_env"]: "DEBUG",
+                                           sp["pool_env"]: "30"}))
+    ok3, msg3 = _p08_negative(lang, port, d, log, sp)
+    if ok1 and ok2 and ok3:
+        return True, "基线契约 + env 覆盖优先级 + fail-fast 全部通过"
+    parts = []
+    if not ok1:
+        parts.append("基线: " + msg1)
+    if not ok2:
+        parts.append("覆盖: " + msg2)
+    if not ok3:
+        parts.append("fail-fast: " + msg3)
+    return False, "；".join(parts)
+
+
+# ================= 场景 09：HTTP 客户端（超时/重试/熔断） =================
+# 契约（用例顺序即熔断状态机的时间线，不能调换）：
+#   1. /health                → cb_state=closed（服务字段 + mock 端口逐语言声明）
+#   2. POST {}（全缺省）       → 调内置 mock /ok：success/status 200/retries 0/body_preview.ok
+#   3. POST 部分字段（README 批量测试载荷，无 url）→ 同上，默认 url 生效
+#   4. POST /slow timeout=500 r=0 → 超时：success=false/status 0/retries 0/error 非空，
+#      400 ≤ latency ≤ 1500（下界证明等到了超时点，上界证明没等满 mock 的 2s、也没重试风暴）
+#      【记熔断失败 #1】
+#   5. POST 连接拒绝 r=1       → retries=1，50 ≤ latency ≤ 3000（下界证明 100ms 退避真的发生）
+#      【记熔断失败 #2】
+#   6. POST /fail 500 r=2      → status_code=500（README 统一接口：重试耗尽返回真实状态码）、
+#      retries=2、error 含 "500"、250 ≤ latency ≤ 6000（100+200ms 退避和的下界）
+#      【记熔断失败 #3 → 熔断器打开】
+#   7-9. POST /fail r=0 ×3     → CIRCUIT_OPEN：error 精确匹配 "CIRCUIT_OPEN: 熔断中"、
+#      latency_ms==0（证明连 HTTP 尝试都没发生）
+#  10. /health                → cb_state=open
+#  11. POST /ok               → 仍被熔断（latency 0）
+# 响应键集合三种形态跨语言逐字段一致（实现侧已对齐）：
+#   成功   {status_code, latency_ms, retries, success, body_preview, url, timestamp}
+#   失败   {status_code, latency_ms, retries, success, error, url, timestamp}
+#   熔断中 = 失败形态（status 0 / latency 0 / retries 0 / error "CIRCUIT_OPEN: 熔断中"）
+P09_SPEC = {
+    # mock_port 的类型逐语言：Go 的 health 里是字符串（strings.TrimPrefix），其余是数字
+    "java":    {"mock_port": 8200, "service": "http-client-java", "mock_port_type": int},
+    "go":      {"mock_port": 8201, "service": "http-client-go", "mock_port_type": str},
+    "python":  {"mock_port": 8202, "service": "http-client-python", "mock_port_type": int},
+    "rust":    {"mock_port": 8203, "service": "http-client-rust", "mock_port_type": int},
+    "ts-node": {"mock_port": 8204, "service": "http-client-ts-node", "mock_port_type": int},
+}
+P09_OK_KEYS = {"status_code", "latency_ms", "retries", "success", "body_preview", "url", "timestamp"}
+P09_FAIL_KEYS = {"status_code", "latency_ms", "retries", "success", "error", "url", "timestamp"}
+P09_CIRCUIT_MSG = "CIRCUIT_OPEN: 熔断中"
+
+
+def _p09_num(v, minimum=0):
+    """非负数字（bool 必须排除：Python 的 True==1 会骗过 isinstance 检查）。"""
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and v >= minimum
+
+
+def _p09_key_check(body, want, fails, label):
+    if not isinstance(body, dict):
+        fails.append("[%s] 响应不是 JSON 对象: %r" % (label, body))
+        return False
+    if set(body.keys()) != want:
+        fails.append("[%s] 键集合不一致 actual=%s expected=%s"
+                     % (label, sorted(body.keys()), sorted(want)))
+        return False
+    return True
+
+
+def verify_09(lang, port, d, log):
+    sp = P09_SPEC[lang]
+    mock = sp["mock_port"]
+    mock_url = "http://localhost:%d" % mock
+
+    def health_assert(want_state):
+        def fn(status, headers, body, fails, label):
+            if status != 200:
+                fails.append("[%s] HTTP %s（期望 200）" % (label, status))
+                return
+            if not _p09_key_check(body, {"service", "mock_port", "cb_state"}, fails, label):
+                return
+            if body.get("service") != sp["service"]:
+                fails.append("[%s] service=%r（期望 %r）" % (label, body.get("service"), sp["service"]))
+            mp = body.get("mock_port")
+            if sp["mock_port_type"] is str:
+                ok_mp = mp == str(mock)
+            else:
+                ok_mp = _p09_num(mp) and int(mp) == mock
+            if not ok_mp:
+                fails.append("[%s] mock_port=%r（期望 %r）" % (label, mp, mock))
+            if body.get("cb_state") != want_state:
+                fails.append("[%s] cb_state=%r（期望 %r）" % (label, body.get("cb_state"), want_state))
+        return fn
+
+    def ok_assert(url, label_desc):
+        def fn(status, headers, body, fails, label):
+            if status != 200:
+                fails.append("[%s] HTTP %s（期望 200）" % (label, status))
+                return
+            if not _p09_key_check(body, P09_OK_KEYS, fails, label):
+                return
+            if body.get("success") is not True:
+                fails.append("[%s] success=%r（期望 True）" % (label, body.get("success")))
+            if body.get("status_code") != 200:
+                fails.append("[%s] status_code=%r（期望 200）" % (label, body.get("status_code")))
+            if body.get("retries") != 0:
+                fails.append("[%s] retries=%r（期望 0）" % (label, body.get("retries")))
+            bp = body.get("body_preview")
+            if not isinstance(bp, dict) or bp.get("ok") is not True:
+                fails.append("[%s] body_preview=%r（期望含 ok=true 的对象）" % (label, bp))
+            if not _p09_num(body.get("latency_ms")):
+                fails.append("[%s] latency_ms=%r 不是非负数字" % (label, body.get("latency_ms")))
+            if body.get("url") != url:
+                fails.append("[%s] url=%r（期望 %r，%s）" % (label, body.get("url"), url, label_desc))
+            ts = body.get("timestamp")
+            if not isinstance(ts, str) or not ts.strip():
+                fails.append("[%s] timestamp=%r 不是非空字符串" % (label, ts))
+        return fn
+
+    def fail_assert(status_code, retries, latency_lo, latency_hi, error_pred, label_desc):
+        def fn(status, headers, body, fails, label):
+            if status != 200:
+                fails.append("[%s] HTTP %s（期望 200）" % (label, status))
+                return
+            if not _p09_key_check(body, P09_FAIL_KEYS, fails, label):
+                return
+            if body.get("success") is not False:
+                fails.append("[%s] success=%r（期望 False）" % (label, body.get("success")))
+            if body.get("status_code") != status_code:
+                fails.append("[%s] status_code=%r（期望 %r，%s）"
+                             % (label, body.get("status_code"), status_code, label_desc))
+            if body.get("retries") != retries:
+                fails.append("[%s] retries=%r（期望 %r，%s）" % (label, body.get("retries"), retries, label_desc))
+            err = body.get("error")
+            if not isinstance(err, str) or not err.strip():
+                fails.append("[%s] error=%r 不是非空字符串" % (label, err))
+            elif not error_pred(err):
+                fails.append("[%s] error=%r 不满足 %s" % (label, err, label_desc))
+            lm = body.get("latency_ms")
+            if not _p09_num(lm):
+                fails.append("[%s] latency_ms=%r 不是非负数字" % (label, lm))
+            elif not (latency_lo <= lm <= latency_hi):
+                fails.append("[%s] latency_ms=%r 不在 [%d, %d]（%s）"
+                             % (label, lm, latency_lo, latency_hi, label_desc))
+        return fn
+
+    def circuit_assert(url):
+        return fail_assert(0, 0, 0, 0, lambda e: e == P09_CIRCUIT_MSG,
+                           "熔断中：latency 必须为 0（无 HTTP 尝试），error 精确匹配")
+
+    cases = [
+        {"name": "GET /health（初始 closed）", "method": "GET", "path": "/health", "status": 200,
+         "assert": health_assert("closed")},
+        {"name": "POST /call-external 全缺省 → mock /ok", "method": "POST",
+         "path": "/call-external", "body": {}, "status": 200,
+         "assert": ok_assert(mock_url + "/ok", "缺省 url 必须是内置 mock /ok")},
+        {"name": "POST /call-external 部分字段（README 批量载荷）", "method": "POST",
+         "path": "/call-external", "body": {"timeout_ms": 3000, "retry_times": 1}, "status": 200,
+         "assert": ok_assert(mock_url + "/ok", "缺 url 时回退默认 mock /ok")},
+        {"name": "POST /slow timeout=500 r=0 → 超时", "method": "POST",
+         "path": "/call-external",
+         "body": {"url": mock_url + "/slow", "timeout_ms": 500, "retry_times": 0}, "status": 200,
+         "assert": fail_assert(0, 0, 400, 1500, lambda e: True,
+                               "超时：等到了 500ms 超时点，但没等满 mock 的 2s")},
+        {"name": "POST 连接拒绝 r=1 → 重试一次", "method": "POST",
+         "path": "/call-external",
+         "body": {"url": "http://localhost:9/x", "timeout_ms": 3000, "retry_times": 1}, "status": 200,
+         "assert": fail_assert(0, 1, 50, 3000, lambda e: True,
+                               "连接拒绝：retries=1 且耗时 ≥100ms 退避")},
+        {"name": "POST /fail 500 r=2 → 重试耗尽", "method": "POST",
+         "path": "/call-external",
+         "body": {"url": mock_url + "/fail", "timeout_ms": 3000, "retry_times": 2}, "status": 200,
+         "assert": fail_assert(500, 2, 250, 6000, lambda e: "500" in e,
+                               "5xx：重试耗尽返回真实状态码 500，耗时含 100+200ms 退避")},
+    ]
+    for i in range(3):
+        cases.append({"name": "POST /fail r=0 第%d次 → 熔断中" % (i + 1), "method": "POST",
+                      "path": "/call-external",
+                      "body": {"url": mock_url + "/fail", "timeout_ms": 3000, "retry_times": 0},
+                      "status": 200, "assert": circuit_assert(mock_url + "/fail")})
+    cases += [
+        {"name": "GET /health（三连失败后 open）", "method": "GET", "path": "/health", "status": 200,
+         "assert": health_assert("open")},
+        {"name": "POST /ok → 仍被熔断", "method": "POST", "path": "/call-external",
+         "body": {"url": mock_url + "/ok", "timeout_ms": 3000, "retry_times": 0}, "status": 200,
+         "assert": circuit_assert(mock_url + "/ok")},
+    ]
+
+    # 内置 mock 与主服务同进程：先释放 mock 端口，避免上次运行的残留占用导致误判
+    free_port(mock)
+    return verify_cases(lang, port, d, log, cases)
+
+
 CONTRACT_VERIFIERS = {
     "00-hello-http": verify_00,
     "01-json-serialize": verify_01,
@@ -2070,6 +2373,8 @@ CONTRACT_VERIFIERS = {
     "04-file-io": verify_04,
     "06-simple-rag-demo": verify_06,
     "07-structured-logging": verify_07,
+    "08-config-management": verify_08,
+    "09-http-client": verify_09,
 }
 
 

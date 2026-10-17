@@ -13,6 +13,9 @@ tokio = { version = "1", features = ["full"] }
 # Rust 最流行的 HTTP 客户端：reqwest
 reqwest = { version = "0.12", features = ["json"] }
 
+# 时间戳（跨语言统一响应字段 timestamp，其他四门语言都有）
+chrono = { version = "0.4", features = ["clock"] }
+
 [profile.release]
 opt-level = 3
 lto = true

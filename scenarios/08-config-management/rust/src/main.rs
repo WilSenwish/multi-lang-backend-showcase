@@ -104,10 +104,17 @@ fn load_config() -> Result<AppConfig, ConfigError> {
     }
 
     // 3. 环境变量覆盖（MYAPP_ 前缀，__ 分隔层级）
-    //    MYAPP_SERVER__PORT=9000 → server.port = 9000
-    //    Rust config crate 默认用 __（双下划线），Go 用 . → _ 替换
+    //    MYAPP_DATABASE__URL=prod-db:3306 → database.url = "prod-db:3306"
+    //    ⚠️ config 0.14 的两个默认值陷阱（README 曾误写"config crate 默认 __"）：
+    //      a) 路径分隔符默认是**空串**（不是 "__"）—— 不显式 separator("__") 时，
+    //         MYAPP_DATABASE__URL 会被当成单个键 "database__url"，永远匹配不上 database.url，
+    //         且**不报错**，表现为"env 覆盖静默失效"；
+    //      b) 一旦设置了 separator("__")，前缀分隔符会跟着变成 "__"（prefix_pattern = "myapp__"），
+    //         导致 MYAPP_ 开头的键全部被跳过 —— 必须同时把 prefix_separator 钉回 "_"。
     builder = builder.add_source(
         Environment::with_prefix("MYAPP")
+            .prefix_separator("_")
+            .separator("__")
             .try_parsing(true), // 自动解析 int/bool/string
     );
 

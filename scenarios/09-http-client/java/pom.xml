@@ -26,11 +26,15 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
-        <!-- Resilience4j（熔断/重试/限流 — 企业级） -->
+        <!-- Resilience4j（熔断/重试/限流 — 企业级）
+             注意：Spring Boot 3 必须用 spring-boot3 starter。老代码用 1.7.1 的
+             spring-boot2 starter，其自动配置注册文件是 Boot 2 的 spring.factories 格式，
+             Boot 3 根本不读 —— CircuitBreakerRegistry/Aspect 全部缺席，
+             @CircuitBreaker/@Retry 注解成了装饰品（不报错也不生效）。 -->
         <dependency>
             <groupId>io.github.resilience4j</groupId>
-            <artifactId>resilience4j-spring-boot2</artifactId>
-            <version>1.7.1</version>
+            <artifactId>resilience4j-spring-boot3</artifactId>
+            <version>2.2.0</version>
         </dependency>
         <!-- Apache HttpClient 5（底层连接池更好） -->
         <dependency>

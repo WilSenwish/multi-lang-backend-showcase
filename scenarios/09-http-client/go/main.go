@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"net/http"
@@ -85,14 +86,28 @@ func (cb *CircuitBreaker) RecordFailure() {
 
 // ==================== HTTP Client ====================
 
+// firstOf：指针字段缺省时取默认值（区分"没传"与"显式传 0"）。
+func firstOf(p *int, def int) int {
+	if p == nil {
+		return def
+	}
+	return *p
+}
+
 // callExternal 带指数退避重试 + 熔断
+// 返回的 map 键集合分三种形态（跨语言统一契约）：
+//
+//	成功      {status_code, latency_ms, retries, success, body_preview, url, timestamp}
+//	重试耗尽  {status_code, latency_ms, retries, success, error, url, timestamp}
+//	熔断中    {status_code:0, latency_ms:0, retries:0, success:false, error:"CIRCUIT_OPEN: 熔断中", url, timestamp}
 func callExternal(ctx context.Context, client *http.Client, cb *CircuitBreaker, url string, maxRetries int, timeout time.Duration) (map[string]interface{}, error) {
 	resp := map[string]interface{}{
-		"url":      url,
-		"retries":  0,
-		"success":  false,
-		"latency":  0,
-		"timestamp": time.Now().Format(time.RFC3339),
+		"url":         url,
+		"retries":     0,
+		"success":     false,
+		"status_code": 0,
+		"latency_ms":  0,
+		"timestamp":   time.Now().Format(time.RFC3339),
 	}
 
 	// 熔断检查
@@ -103,6 +118,7 @@ func callExternal(ctx context.Context, client *http.Client, cb *CircuitBreaker, 
 
 	start := time.Now()
 	var lastErr error
+	var lastStatus int // 最后一次尝试拿到的 HTTP 状态码（网络错误时为 0）
 
 	// 指数退避重试
 	for attempt := 0; attempt <= maxRetries; attempt++ {
@@ -129,22 +145,26 @@ func callExternal(ctx context.Context, client *http.Client, cb *CircuitBreaker, 
 		httpResp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
-			if attempt < maxRetries {
-				continue // 重试
-			}
+			lastStatus = 0
 			continue
 		}
 
-		// 5xx 也重试
+		// 先读 body 再判断状态码：5xx 也要消费响应体（连接才能被复用），
+		// 且失败路径统一走下面的"重试耗尽"分支，不再落进成功分支。
+		body, _ := io.ReadAll(httpResp.Body)
+		httpResp.Body.Close()
+		lastStatus = httpResp.StatusCode
+
+		// 5xx 重试
 		if httpResp.StatusCode >= 500 {
-			httpResp.Body.Close()
 			lastErr = fmt.Errorf("HTTP %d", httpResp.StatusCode)
 			if attempt < maxRetries {
 				continue
 			}
+			break // 最后一次也失败 → 统一失败路径
 		}
 
-		// 成功
+		// 成功（< 500）
 		latency := time.Since(start)
 		resp["status_code"] = httpResp.StatusCode
 		resp["latency_ms"] = latency.Milliseconds()
@@ -152,19 +172,25 @@ func callExternal(ctx context.Context, client *http.Client, cb *CircuitBreaker, 
 		resp["success"] = httpResp.StatusCode < 400
 		cb.RecordSuccess()
 
-		// body 预览
-		var body map[string]interface{}
-		json.NewDecoder(httpResp.Body).Decode(&body)
-		httpResp.Body.Close()
-		resp["body_preview"] = body
+		var parsed interface{}
+		if err := json.Unmarshal(body, &parsed); err == nil {
+			resp["body_preview"] = parsed
+		} else {
+			resp["body_preview"] = string(body)
+		}
 		return resp, nil
 	}
 
-	// 全部重试失败
+	// 全部重试失败（网络错误或最后一次 5xx）
 	cb.RecordFailure()
-	resp["status_code"] = 0
+	resp["status_code"] = lastStatus // 5xx 时为真实状态码（如 500），网络错误时为 0
 	resp["latency_ms"] = time.Since(start).Milliseconds()
-	resp["error"] = lastErr.Error()
+	resp["retries"] = maxRetries
+	if lastErr != nil {
+		resp["error"] = lastErr.Error()
+	} else {
+		resp["error"] = "unknown error"
+	}
 	return resp, lastErr
 }
 
@@ -207,26 +233,40 @@ func callExternalHandler(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		URL        string `json:"url"`
-		TimeoutMs  int    `json:"timeout_ms"`
-		RetryTimes int    `json:"retry_times"`
+		TimeoutMs  *int   `json:"timeout_ms"`
+		RetryTimes *int   `json:"retry_times"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
-	if req.URL == "" {
-		req.URL = fmt.Sprintf("http://localhost%s/ok", mockAddr)
+	// 解码失败必须显式 400：Go 的 json.Decode 遇类型不匹配会留下零值，
+	// 不检查 err 的话 {"retry_times":"abc"} 会静默按默认值执行。
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json body: "+err.Error(), http.StatusBadRequest)
+		return
 	}
-	if req.TimeoutMs == 0 {
-		req.TimeoutMs = 5000
+	// 指针字段区分"缺省"与"显式 0"：retry_times=0 表示不重试，
+	// 非指针 int 的零值会把"显式 0"吞成默认值（其他四门语言都接受 0）。
+	url := ""
+	if req.URL != "" {
+		url = req.URL
+	} else {
+		url = fmt.Sprintf("http://localhost%s/ok", mockAddr)
 	}
-	if req.RetryTimes == 0 {
-		req.RetryTimes = 2 // 总共最多 3 次（含首次）
+	timeoutMs := firstOf(req.TimeoutMs, 5000)
+	retryTimes := firstOf(req.RetryTimes, 2) // 总共最多 3 次（含首次）
+	if timeoutMs <= 0 {
+		http.Error(w, "timeout_ms must be positive", http.StatusBadRequest)
+		return
+	}
+	if retryTimes < 0 {
+		http.Error(w, "retry_times must be >= 0", http.StatusBadRequest)
+		return
 	}
 
 	// HTTP Client：Transport 连接池 + 分开配置超时
 	transport := &http.Transport{
-		MaxIdleConns:        100,
-		MaxConnsPerHost:     20,
-		IdleConnTimeout:     30 * time.Second,
-		DisableKeepAlives:   false,
+		MaxIdleConns:      100,
+		MaxConnsPerHost:   20,
+		IdleConnTimeout:   30 * time.Second,
+		DisableKeepAlives: false,
 	}
 	client := &http.Client{
 		Transport: transport,
@@ -234,7 +274,7 @@ func callExternalHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp, _ := callExternal(context.Background(), client, globalCircuitBreaker,
-		req.URL, req.RetryTimes, time.Duration(req.TimeoutMs)*time.Millisecond)
+		url, retryTimes, time.Duration(timeoutMs)*time.Millisecond)
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	json.NewEncoder(w).Encode(resp)
@@ -243,9 +283,9 @@ func callExternalHandler(w http.ResponseWriter, r *http.Request) {
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"service":     "http-client-go",
-		"mock_port":   strings.TrimPrefix(mockAddr, ":"),
-		"cb_state":    globalCircuitBreaker.state,
+		"service":   "http-client-go",
+		"mock_port": strings.TrimPrefix(mockAddr, ":"),
+		"cb_state":  globalCircuitBreaker.state,
 	})
 }
 

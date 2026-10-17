@@ -3,9 +3,9 @@
 > 多语言后端对比仓库 `Multi-Lang-Backend-Showcase` —— **13 个基础场景 ＋ 5 个边界场景 × 5 种语言**
 > （Java / Go / Python / Rust / TS-Node = **90 个验证单元**）的逐场景本地运行验证、缺陷修复与验证方法沉淀。
 >
-> 最后更新：2026-10-16（新增场景 17「错误处理深水区」，**可观测性首次成为可断言字段**，见 §10；
-> Phase 6 五个边界场景全部交付；**验证强度加强计划启动**——基础场景正从"端口监听"
-> 逐批升级到契约级，00/01 已完成，见 §12）
+> 最后更新：2026-10-17（验证强度加强计划批次 4 —— 场景 08「配置管理」升级为
+> 基线/覆盖/fail-fast 三次运行契约，场景 09「HTTP 客户端」升级为 11 用例熔断状态机契约，
+> 见 §12；00/01/02/04/06/07/08/09 已完成契约级升级）
 > ｜ 验证脚本：`.wb_verify/verify_all.py`
 > ｜ 结果：`.wb_verify/all_results.json` / `.md` ｜ 历史归档：`.wb_verify/runs/`
 
@@ -28,14 +28,17 @@
 
 共识别并修复 **39 条代码/文档缺陷**：首轮 34 条（编译期/启动期硬错误为主，见 §4），
 本轮复核新增 **5 条**（都是"能跑起来但行为不对"的静默缺陷，见 §5）。
-验证强度加强计划批次 1/2/3（§12）又识别并修复 **39 处跨语言偏差**（00/01 五处 + 02/04 十二处 +
-06/07 二十二处）—— 在"端口监听级"判定下，这些偏差没有任何一宗会暴露。
+验证强度加强计划批次 1/2/3/4（§12）又识别并修复 **57 处跨语言偏差**（00/01 五处 + 02/04 十二处 +
+06/07 二十二处 + 08/09 十八处）—— 在"端口监听级"判定下，这些偏差没有任何一宗会暴露。
 验证器本身的判定缺陷与设计要点见 §7（共 11 条），其中本轮修掉 3 条判定缺陷 ——
 **其中一条（`"shutdown" in log`）曾让真正的崩溃被记成 PASS**。
 
 > 本轮最重要的结论：**"进程起来了 / 端口通了"远不等于"行为正确"**。
 > 把判定从"能启动"收紧到"契约正确"之后，立刻又浮出 5 个静默缺陷（行数统计差 1、
 > CLI 选项全部失效、优雅关闭不驱动框架退出、关闭时掐断在途请求、探针返回 500 而非 503）。
+> 批次 4 更进一步：**"功能 100% 失效"与"配置静默丢失"这类缺陷同样能通过端口监听** ——
+> 09/TS 的形参遮蔽让每个请求都抛异常、09/Java 的 YAML 抄进 `.properties` 让熔断配置全程丢失，
+> 两者在旧判定下都是全绿。
 
 ---
 
@@ -51,8 +54,8 @@
 | 05 | unit-test-mock | test | 测试摘要（用例数） | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 06 | simple-rag-demo | contract | **契约级**（28 用例：切分/分词/向量/cosine 全流程 oracle + answer 自洽 + 400/405 边界） | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 07 | structured-logging | contract | **契约级**（13 用例：响应键名/request_id 格式 + **日志字段逐语言比对** + 日志条数硬证据） | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 08 | config-management | http | 端口监听 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 09 | http-client | http | 端口监听 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 08 | config-management | contract | **契约级**（3 次运行：基线全字段 exact + env 覆盖优先级 + 非法配置 fail-fast） | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 09 | http-client | contract | **契约级**（11 用例：熔断状态机时间线 + 耗时上下界 + 三种键集合逐字段） | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 10 | rate-limit | http | 端口监听 | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 11 | db-crud-pool | http | 端口监听 | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 12 | graceful-shutdown | graceful | 在途请求 + 关闭日志 | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -70,6 +73,10 @@
 32MB 用例的 RSS 增量 0.0~1.2MiB（上限 16MiB）。
 场景 17 把 `stack_present` 做成**逐语言预期**（Java/Python/TS 为 true，Go/Rust 为 false）：
 这不是缺陷而是语言默认行为，刻意不为了对齐去给 Go 抓栈、给 Rust 开 `RUST_BACKTRACE`。
+场景 08 的三次运行分别钉住"读得对"（exact 全字段）、"env > 文件"（prod 下 env 必须赢过
+config-prod.yaml）、"非法配置起不来"（端口自始至终不得监听）。
+场景 09 的 11 个用例按熔断器生命周期排列：2 次成功 → 超时/连接拒绝/5xx 三连失败 →
+第 4 次被拒（`latency_ms==0` 证明无 HTTP 尝试）→ `/health` 报 open → 再打 `/ok` 仍被熔断。
 
 **分语言统计**：Java 18/18 ｜ Go 18/18 ｜ Python 18/18 ｜ Rust 18/18 ｜ TS-Node 18/18。
 基础场景 13×5 = 65/65 全绿；边界场景 13、14、15、16、17 各 5/5 全绿。
@@ -83,10 +90,10 @@
 
 - **脚本**：`.wb_verify/verify_all.py`（覆盖 5 种语言；单个测点失败不中断整体；**始终**产出结果文件并归档到 `.wb_verify/runs/`）。
 - **判定逻辑**：
-  - `contract`：**通用用例引擎**（`verify_cases`）—— 启动服务 → 逐个发请求 → 逐字段比对
-    （`json_match` 递归子集/全等匹配，bool 与 int 分开判）。用例支持状态码、`Content-Type`、
-    期望 JSON（`exact` 控制键集合）、自定义 `assert` 回调。自场景 00 起，http 场景
-    正从"端口监听"逐批升级到契约级（当前 00、01、02、04、06、07 已完成，见 §12）。
+- `contract`：**通用用例引擎**（`verify_cases`）—— 启动服务 → 逐个发请求 → 逐字段比对
+  （`json_match` 递归子集/全等匹配，bool 与 int 分开判）。用例支持状态码、`Content-Type`、
+  期望 JSON（`exact` 控制键集合）、自定义 `assert` 回调。自场景 00 起，http 场景
+  正从"端口监听"逐批升级到契约级（当前 00、01、02、04、06、07、08、09 已完成，见 §12）。
   - `http`：启动服务 → **原始 TCP 连接**探活（不用 curl/urllib，见 §7.1）→ 关闭进程组。
   - `cli`：对仓库根 `README.md` 跑 `-l -w`，把输出与**独立计算的基准值交叉核对**；
     再逐个跑 `-l` / `-w` / `-c`，校验**单选项只输出对应指标**；最后跑无选项，校验三项全输出。
@@ -403,9 +410,9 @@ cd scenarios/11-db-crud-pool/ts-node && npm rebuild better-sqlite3 --build-from-
 
 - 本报告的矩阵由**自动化脚本在本机逐场景实测**得出；日志原件在 `.wb_verify/all_logs/`（每个「场景 × 语言」一份）。
 - 判定强度分层：`03`（数值 + 选项语义）、`05`（测试摘要）、`12`（在途请求 + 关闭日志）是**行为级**断言；
-  `http` 类场景目前仍是**端口监听级**（"可启动、契约端点可访问"），**不包含**响应内容正确性
-  （如 01 的 JSON 字段、02 的并发吞吐、06 的召回质量、09 的重试次数、10 的精确速率）。
-- **下一步建议**：为 `http` 类场景补"契约级"断言 —— 按各自 README 声明的端点与响应体，
+  `10` / `11` 目前仍是**端口监听级**（"可启动"），**不包含**响应内容正确性
+  （如 10 的精确速率、11 的 CRUD 结果）；其余 http 场景均已升级契约级。
+- **下一步建议**：为 `10` / `11` 补"契约级"断言 —— 按各自 README 声明的端点与响应体，
   对 5 种语言做**响应归一化后的一致性比对**（同一请求 → 同一语义结果）。
   本轮在 03/12 上的经验说明：这类比对才最容易抓到"静默不一致"。
 
@@ -432,9 +439,9 @@ Python 忘记 `& MASK`、TS 用 `number` 而非 `BigInt`、Java 用有符号输�
 
 | 层级 | 内容 | 场景 |
 |------|------|------|
-| 启动级 | 端口可连接 | 02/04/06/07/08/09/10/11 |
+| 启动级 | 端口可连接 | 10 / 11 |
 | 行为级 | 数值与语义契约（统计口径、选项语义、测试摘要、在途请求） | 03/05/12 |
-| **契约级** | **响应内容逐字段比对（通用用例引擎 `verify_cases`）** | **00 / 01** |
+| **契约级** | **响应内容逐字段比对（通用用例引擎 `verify_cases`）** | **00 / 01 / 02 / 04 / 06 / 07 / 08 / 09** |
 | **契约级** | **响应内容逐字段与 oracle 比对（数值/数据类）** | **13 / 14 / 15 / 16 / 17** |
 
 ### 实测结果
@@ -680,7 +687,7 @@ tasks=8, task_ms=2000, fail_index=3, fail_after_ms=250
 | 1 | `00-hello-http` + `01-json-serialize` | ✅ 已完成 |
 | 2 | `02-concurrent-task` + `04-file-io` | ✅ 已完成 |
 | 3 | `06-simple-rag-demo` + `07-structured-logging` | ✅ 已完成 |
-| 4 | `08-config-management` + `09-http-client` | ⬜ 待开始 |
+| 4 | `08-config-management` + `09-http-client` | ✅ 已完成 |
 | 5 | `10-rate-limit` + `11-db-crud-pool` | ⬜ 待开始 |
 | 6 | `03-cli-tool` + `05-unit-test-mock` + `12-graceful-shutdown`（行为级 → 继续加深） | ⬜ 待开始 |
 
@@ -835,3 +842,68 @@ TS 的 `msg`+`reqId`），只要求"语义字段都在、类型一致"。日志�
 | 07/TS 传错 logger 键名 | 改回 `loggerInstance` | 全部日志用例失败（默认 logger 的字段路径不匹配） ✅ 被抓 |
 
 批次 3 结果：`python3 .wb_verify/verify_all.py 06 07` → **10/10 全绿**（归档见 `.wb_verify/runs/20261017-102857_sub-06_07.md`）。
+
+### 批次 4（08 + 09）实测：配置优先级与熔断状态机，共修复 18 处跨语言偏差
+
+**场景 08（多环境配置管理，3 次运行）**：基线 `exact=True` 全字段契约（键集合 + 每字段；
+`server.port` 用验证器实际连接的端口，把"配置声称的端口"与"真实绑定的端口"钉在一起；
+`password` 断言为 `********`，脱敏值本身也是契约）→ env 覆盖运行（`MYAPP_ENV=prod` +
+url/level/pool_size，**env 必须赢过 `config-prod.yaml`** 才说明优先级正确）→
+负向运行（非法 `logging.level=BOGUS` 必须 fail-fast，整个窗口端口不得监听）。
+
+**场景 09（HTTP 客户端，11 用例）**：**用例顺序即熔断状态机的时间线** ——
+2 次成功 → 超时 / 连接拒绝 / 5xx 三连失败（第 3 次失败照常执行并记账）→
+第 4 次调用被拒（`latency_ms==0` 证明连 HTTP 尝试都没发生）→ `/health` 报 `open` →
+再打 `/ok` 仍被熔断。响应统一三种键集合形态（成功 7 键 / 失败 7 键 / 熔断中 = 失败形态）逐字段比对；
+耗时上下界是硬证据：超时用例 `400 ≤ latency ≤ 1500ms`（下界证明等到了超时点，上界证明没等满
+mock 的 2s、也没重试风暴），重试用例 `250 ≤ latency ≤ 6000ms`（100+200ms 退避和的下界）。
+
+| 语言 | 偏差 | 修正 |
+|------|------|------|
+| Go | 08：`Password` 带 `json:"-"`，**脱敏值一起被吞**，响应直接少 `password` 键（其余四门都有） | 新增响应专用结构体 `DatabaseResp` |
+| Rust | 08：config 0.14 的 env 路径分隔符默认是**空串**（README 却写"config crate 默认 `__`"），`MYAPP_DATABASE__URL` 变成单键，env 覆盖**静默失效**；连带非法 level 的 fail-fast 也失效 | `Environment::with_prefix("MYAPP").prefix_separator("_").separator("__")`（两个都要显式设） |
+| Go | 09：`retry_times:0` 被吞成默认 2（非指针 int 分不清"缺省"与"显式 0"） | 指针字段 + `firstOf` |
+| Go | 09：熔断响应缺 `status_code`/`latency_ms` 初值，7 键不齐 | 初始 map 补初值 |
+| Go / Rust | 09：**5xx 重试耗尽落进成功分支**，500 被记成 CB success —— 熔断器永远打不开 | 终局统一走失败路径 + `record_failure`，返回真实 `lastStatus=500` |
+| Rust | 09：`CallReq` 无 `#[serde(default)]`，`{}` 请求体直接 422 | 三字段 `default = ...` |
+| Rust | 09：成功响应多 `error:null`、缺 `timestamp`，键集合与其余四门不一致 | `skip_serializing_if = "Option::is_none"` + `timestamp` 字段 |
+| Python | 09：mock 用单线程 `HTTPServer`，`/slow` 的 2s 睡眠把后续**无关请求**延迟放大到 1691ms | `ThreadingHTTPServer` |
+| Python | 09：5xx 终局 `status_code` 不跟踪真实值；超时错误串为空；熔断响应缺 `retries`/`timestamp` | `last_status` 跟踪 + `f"TIMEOUT: {type(e).__name__}"` + 补键 |
+| TS-Node | 09：**`import { request }` 被 fastify 处理器形参 `request` 遮蔽**，每个 `/call-external` 都抛 "request is not a function"，**全量请求 100% 失败** | 别名 `import { request as undiciRequest }` |
+| TS-Node | 09：`\|\|` 默认值吞掉显式 `timeout_ms=0`/`retry_times=0` | 改 `??` |
+| TS-Node | 09：undici 的 headers/bodyTimeout 走 ~499ms tick 的快定时器（`RESOLUTION_MS=1000`），500ms 超时实测 ~1000ms 才触发，**比请求级 deadline 还慢** | `AbortController` + `setTimeout(deadline)` |
+| TS-Node | 09：catch 退出条件 `attempt >= maxRetries - 1` 在 r=1 时第一次失败就退（少试一次）；5xx 终局不记 CB 失败 | 改 `maxAttempts - 1` + 补 `recordFailure` |
+| Java | 09：**`application.properties` 里抄进 YAML 语法**（键名变成 `resilience4j:`/`max-attempts` 谁也匹配不上），Resilience4j 全程用默认值 | 点分隔键 + 显式 CB 参数（window=10, min-calls=5, rate=50%, wait=10s） |
+| Java | 09：`resilience4j-spring-boot2:1.7.1` 的自动配置注册是 Boot 2 的 `spring.factories` 格式，**Boot 3 不读 → 注解完全静默失效** | 换 `resilience4j-spring-boot3:2.2.0` + 编程式 `cb.executeSupplier()` |
+| Java | 09：`timeout_ms` 入参被整个忽略（RestTemplate bean 固定 3s/10s 超时）；`retry_times` 入参被忽略（`@Retry` 固定 3 次） | HC5 逐请求 `RequestConfig` + 手工指数退避（次数取请求体） |
+| Java | 09：HC5 的 manager 被 `client.close()` shutdown（"Connection pool shut down"）；`getForObject(url, String.class)` 返回原始字符串未解析 | `setConnectionManagerShared(true)` + `parseBody` |
+
+**方法论沉淀**：
+
+- **"功能 100% 失效"也能通过端口监听**：09/TS 的形参遮蔽让每个请求都抛异常、
+  09/Java 的 YAML 抄进 `.properties` 让熔断配置全程丢失 —— 两者在旧判定下都是全绿。
+  端口监听级验证对"服务在但功能全坏"完全失明，本批这是最直观的一例。
+- **耗时上下界是"退避有没有真发生"的唯一硬证据**：把 Go 的退避清零后，
+  `retries` 计数、状态码、熔断状态**全部正确**，只有耗时下界能击穿它 ——
+  "等待发生了多久"是字段断言看不见的维度（与批次 2 的限流耗时一脉相承）。
+- **"失败也要走完整路径"**：5xx 被记成 CB success（Go/Rust 两门）的共性是
+  **错误路径少走了一步** —— 响应体看着完全合理（`status_code=500` 都返回了），
+  只有熔断状态机能暴露。写重试/熔断代码时，"终局"分支要逐个审查。
+- **配置类框架的"静默失效"是重灾区**：Rust 的空分隔符、Java 的 boot2 starter、
+  Java properties 里的 YAML —— 三处都是"代码没报错、功能没生效"，且 README 都声称功能正常。
+  文档声称与代码事实必须用探针分离验证（本批两个探针脚本先实测后写契约）。
+- **逐语言声明预期，不强行抹平**：`mock_port` 的类型（Go 是字符串其余是数字）、
+  `POST /config` 的状态码（405/200/404）都按语言声明；强行统一要么改库行为要么藏实现。
+
+**六个反向对照实验**（证明断言有牙齿，均已还原并复跑确认）：
+
+| 实验 | 改动 | 结果 |
+|------|------|------|
+| 08/Go 密码不脱敏 | `Password: "********"` → 真实密码 | 基线与覆盖两处 `$.database.password: 'secret' != '********'` ✅ 被抓 |
+| 08/Rust 删 `separator("__")` | 复现 config 0.14 空分隔符 | env 覆盖三字段全部回落（url/pool_size/level），**且 fail-fast 跟着失效** ✅ 被抓 |
+| 08/Go 跳过 `cfg.Validate()` | 注掉启动校验 | `logging.level=BOGUS 非法但服务仍监听 8111（启动校验失效）` ✅ 被抓 |
+| 09/Go 不记 CB 失败 | 注掉失败路径的 `cb.RecordFailure()` | 熔断器打不开：3 个熔断用例拿到真实 500、`/health` 仍 closed，共 11 处不符 ✅ 被抓 |
+| 09/Go 退避清零 | 指数退避 ×0 | 连接拒绝 3ms<50ms、5xx 2ms<250ms，**两条耗时下界同时击穿**（而计数/状态码/熔断全对） ✅ 被抓 |
+| 09/TS 形参遮蔽 | `undiciRequest` 改回 `request` | 全量 `/call-external` 抛 "request is not a function"，9 处不符 ✅ 被抓 |
+
+批次 4 结果：`python3 .wb_verify/verify_all.py 08 09` → **10/10 全绿**（归档见 `.wb_verify/runs/20261017-122238_sub-08_09.md`）。
