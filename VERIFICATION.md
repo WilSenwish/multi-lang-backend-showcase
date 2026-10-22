@@ -420,7 +420,7 @@ cd scenarios/11-db-crud-pool/ts-node && npm rebuild better-sqlite3 --build-from-
 
 ## 10. 契约级断言（场景 13 起引入）
 
-前面 §9 提到的"下一步建议"已经在**场景 13（CPU 密集并行计算）**上落地。
+契约级断言（响应内容逐字段与独立 oracle 比对）从**场景 13（CPU 密集并行计算）**起正式引入，并贯穿 14~17 边界场景。
 
 ### 设计：用 Python 独立实现一遍算法作为 oracle
 
