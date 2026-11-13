@@ -16,7 +16,6 @@ Python 结构化日志特点：
 from __future__ import annotations
 
 import contextvars
-import json
 import logging
 import sys
 import time
@@ -40,6 +39,7 @@ def setup_logging():
         sys.stdout.reconfigure(line_buffering=True)
     except Exception:
         pass
+
     structlog.configure(
         processors=[
             # 0. 把 contextvars 里的链路字段（requestId/userId/path）合并进每条日志
@@ -113,9 +113,9 @@ async def request_context_middleware(request: Request, call_next):
         response = await call_next(request)
         return response
     finally:
+        structlog.contextvars.clear_contextvars()
         cost_ms = int((time.time() - start) * 1000)
         bound_logger.info("request completed", costMs=cost_ms)
-        structlog.contextvars.clear_contextvars()
 
 
 # ==================== 端点 ====================
@@ -177,4 +177,4 @@ async def bench(count: int = Query(default=1000)):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8107, log_level="warning")
+    uvicorn.run(app, host="0.0.0.0", port=8107, log_level="debug")

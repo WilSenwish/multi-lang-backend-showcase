@@ -37,7 +37,7 @@ async def _validation_to_400(request: Request, exc: RequestValidationError):
 class RunRequest(BaseModel):
     # 字段缺省走默认值 100/100/10；显式传非法值由 run() 统一返回 400
     # （不用 Field(ge=...)：pydantic 的校验错误是 422，与其余四门的 400 不一致）
-    task_count: int = 100
+    task_count: int = 500
     task_delay_ms: int = 100
     concurrency: int = 10
 
@@ -90,7 +90,7 @@ async def run(req: RunRequest) -> RunResponse:
     # asyncio.Semaphore(concurrency) = 同时最多 concurrency 个协程在执行
     semaphore = asyncio.Semaphore(concurrency)
 
-    # 创建所有任务协程（此时还没执行，只是创建）
+    # 创建所有任务协程（此时还没执行，只是创建）[生成式]
     coroutines = [
         _execute_task(i, req.task_delay_ms, semaphore)
         for i in range(req.task_count)
@@ -111,6 +111,14 @@ async def run(req: RunRequest) -> RunResponse:
         task_delay_ms=req.task_delay_ms,
         results=results,
     )
+
+
+from typing import Annotated
+from fastapi import Query
+
+@app.get("/get_run", response_model=RunResponse)
+async def get_run(params: Annotated[RunRequest, Query()]):
+    return await run(params)
 
 
 if __name__ == "__main__":

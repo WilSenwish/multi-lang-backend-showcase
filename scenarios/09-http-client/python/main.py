@@ -221,4 +221,4 @@ def health():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8117, log_level="warning")
+    uvicorn.run(app, host="0.0.0.0", port=8117, log_level="debug")
