@@ -141,8 +141,16 @@ async fn health_handler(State(bucket): State<SharedBucket>) -> Response {
 
 #[tokio::main]
 async fn main() {
-    println!("限流配置：QPS=1, burst=10 (每秒 1 个令牌，桶容量 10)");
-    println!("Rust Mutex 保证并发安全，编译器强制数据竞争检查");
+    // 初始化 tracing 日志：JSON 格式 + 最低 DEBUG 级别 + stdout
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| "debug".into()))
+        .with_target(false)
+        .json()
+        .init();
+
+    tracing::debug!("rate limit config: QPS=1, burst=10 (1 token per second, bucket capacity 10)");
+    tracing::debug!("Rust Mutex ensures concurrency safety, compiler enforces data race check");
 
     let bucket = Arc::new(Mutex::new(TokenBucket::new(1.0, 10)));
     let app = Router::new()
@@ -151,6 +159,6 @@ async fn main() {
         .with_state(bucket);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8123").await.unwrap();
-    println!("[Rust] rate-limit server starting on 0.0.0.0:8123");
+    tracing::info!(addr = "0.0.0.0:8123", "server starting");
     axum::serve(listener, app).await.unwrap();
 }

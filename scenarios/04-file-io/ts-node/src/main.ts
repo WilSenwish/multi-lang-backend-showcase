@@ -13,11 +13,19 @@
  * - 递归遍历需要自己写或用第三方库（Node 原生没有 walk）
  */
 import Fastify, { FastifyReply } from 'fastify';
+import pino from 'pino';
 import { Dirent } from 'fs';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
 const PORT = 8099;
+
+// pino 初始化：JSON 格式 + stdout + 最低 DEBUG 级别
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'debug',
+  timestamp: pino.stdTimeFunctions.isoTime,
+  transport: { target: 'pino/file', options: { destination: 1 } }
+});
 
 interface WriteBody {
   path: string;
@@ -63,7 +71,7 @@ async function walkDir(dirPath: string): Promise<{ files: number; totalBytes: nu
   return { files, totalBytes };
 }
 
-const fastify = Fastify({ logger: true });
+const fastify = Fastify({ logger });
 
 /** 统一契约：方法不匹配 → 405（fastify 默认对未匹配方法返回 404，这里显式抹平） */
 function methodNotAllowed(reply: FastifyReply, expect: string) {
@@ -198,9 +206,9 @@ fastify.all('/file/scan', async (request, reply) => {
 const startServer = async () => {
   try {
     await fastify.listen({ port: PORT, host: '0.0.0.0' });
-    fastify.log.info(`[TS-Node] file-io server listening on ${PORT}`);
+    logger.info({ msg: 'server starting', addr: `0.0.0.0:${PORT}` });
   } catch (err) {
-    fastify.log.error(err);
+    logger.error({ err }, 'server failed to start');
     process.exit(1);
   }
 };

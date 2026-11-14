@@ -22,8 +22,17 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import Fastify from "fastify";
+import pino from "pino";
 
 const PORT = 8154;
+
+// pino 初始化：JSON 格式 + stdout + 最低 DEBUG 级别
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'debug',
+  timestamp: pino.stdTimeFunctions.isoTime,
+  transport: { target: 'pino/file', options: { destination: 1 } }
+});
+
 /** 确定性数据序列：h(i) = (i+1)*MULT + INC（mod 2^64），amount = (h >> 32) % 100000 */
 const MULT = 6364136223846793005n;
 const INC = 1442695040888963407n;
@@ -198,7 +207,7 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
 }
 
-const app = Fastify({ logger: false });
+const app = Fastify({ logger });
 
 app.post("/stream/process", async (request, reply) => {
   const req = (request.body ?? {}) as StreamRequest;
@@ -257,8 +266,8 @@ app.post("/stream/process", async (request, reply) => {
 
 app.listen({ port: PORT, host: "0.0.0.0" }, (err) => {
   if (err) {
-    console.error(err);
+    logger.error({ err }, 'server failed to start');
     process.exit(1);
   }
-  console.log(`large-file-streaming (ts-node) listening on ${PORT}`);
+  logger.info({ msg: 'server starting', addr: `0.0.0.0:${PORT}` });
 });

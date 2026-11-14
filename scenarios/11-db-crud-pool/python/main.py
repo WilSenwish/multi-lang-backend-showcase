@@ -22,6 +22,35 @@ from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, func
 from sqlalchemy.orm import DeclarativeBase, sessionmaker, Session
 
+# ==================== structlog 结构化日志初始化 ====================
+import logging
+import sys
+
+import structlog
+
+
+def _configure_structlog() -> None:
+    """配置 structlog：JSON 格式输出到 stdout，最低 DEBUG 级别"""
+    structlog.configure(
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.processors.StackInfoRenderer(),
+            structlog.dev.set_exc_info,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.ExceptionPrettyPrinter(),
+            structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(logging.DEBUG),
+        context_class=dict,
+        logger_factory=structlog.PrintLoggerFactory(file=sys.stdout),
+        cache_logger_on_first_use=True,
+    )
+
+
+_configure_structlog()
+logger = structlog.get_logger()
+
 # ==================== DB 配置 ====================
 
 DATABASE_URL = "sqlite:///./demo_py.db"
@@ -167,4 +196,6 @@ def _to_response(u: User) -> UserResponse:
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8127, log_level="warning")
+
+    logger.info("service starting", port=8127, title="db-crud-pool-python")
+    uvicorn.run(app, host="0.0.0.0", port=8127, log_level="debug")

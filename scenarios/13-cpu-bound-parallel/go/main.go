@@ -20,14 +20,42 @@
 package main
 
 import (
-	"encoding/json"
-	"log"
-	"net/http"
+	"fmt"
 	"runtime"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
+
+// ==================== zap 结构化日志初始化 ====================
+
+// logger 全局 SugaredLogger（JSON 输出 + stdout + DEBUG 级别 + caller 信息）
+var logger *zap.SugaredLogger
+
+func init() {
+	cfg := zap.NewProductionConfig()
+	cfg.OutputPaths = []string{"stdout"}
+	cfg.ErrorOutputPaths = []string{"stderr"}
+	cfg.EncoderConfig.TimeKey = "time"
+	cfg.EncoderConfig.LevelKey = "level"
+	cfg.EncoderConfig.MessageKey = "msg"
+	cfg.EncoderConfig.CallerKey = "caller"
+	cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	cfg.EncoderConfig.EncodeLevel = zapcore.LowercaseLevelEncoder
+	cfg.EncoderConfig.EncodeCaller = zapcore.ShortCallerEncoder
+	cfg.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel) // 最低 DEBUG 级别
+	cfg.Sampling = nil                                    // 关闭采样，保证 bench 等场景日志完整
+
+	l, err := cfg.Build()
+	if err != nil {
+		panic(fmt.Sprintf("zap init failed: %v", err))
+	}
+	logger = l.Sugar()
+}
 
 const (
 	listenAddr = ":8136"
@@ -75,15 +103,10 @@ func computeState(id int, iterations uint64) uint64 {
 	return state
 }
 
-func handleCompute(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
+func handleCompute(c *gin.Context) {
 	var req ComputeRequest
 	// 允许空 body：EOF 时按缺省值处理
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	_ = c.ShouldBindJSON(&req)
 
 	taskCount := defaultTaskCount
 	if req.TaskCount != nil && *req.TaskCount >= 1 {
@@ -146,29 +169,24 @@ func handleCompute(w http.ResponseWriter, r *http.Request) {
 		Results:     results,
 	}
 
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		log.Printf("encode response error: %v", err)
-	}
+	c.JSON(200, resp)
 }
 
 func main() {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/compute", handleCompute)
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, map[string]any{"service": "cpu-bound-parallel-go", "cpu_cores": runtime.NumCPU()})
+	defer logger.Sync() // flush 日志
+
+	r := gin.Default() // 自带 Recovery + Logger 中间件
+	r.POST("/compute", handleCompute)
+	r.GET("/health", func(c *gin.Context) {
+		c.JSON(200, gin.H{
+			"service":    "cpu-bound-parallel-go",
+			"cpu_cores":  runtime.NumCPU(),
+			"gomaxprocs": runtime.GOMAXPROCS(0),
+		})
 	})
 
-	log.Printf("[Go] cpu-bound-parallel server starting on %s (GOMAXPROCS=%d)", listenAddr, runtime.GOMAXPROCS(0))
-	if err := http.ListenAndServe(listenAddr, mux); err != nil {
-		log.Fatalf("server failed: %v", err)
-	}
-}
-
-// writeJSON 统一 JSON 输出（带 Content-Type）
-func writeJSON(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		log.Printf("encode response error: %v", err)
+	logger.Infow("server starting", "addr", listenAddr, "GOMAXPROCS", runtime.GOMAXPROCS(0))
+	if err := r.Run(listenAddr); err != nil {
+		logger.Fatalw("server failed", "error", err)
 	}
 }

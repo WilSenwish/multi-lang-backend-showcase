@@ -208,7 +208,7 @@ async fn call_handler(
             sleep(Duration::from_millis(backoff_ms)).await;
         }
 
-        println!("[HTTP-CLIENT] → GET {} (attempt {})", url, attempt + 1);
+        tracing::debug!(url = %url, attempt = attempt + 1, "GET request");
 
         match client
             .request(Method::GET, &url)
@@ -293,6 +293,14 @@ async fn health_handler(State(cb): State<AppState>) -> Response {
 
 #[tokio::main]
 async fn main() {
+    // 初始化 tracing 日志：JSON 格式 + 最低 DEBUG 级别 + stdout
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| "debug".into()))
+        .with_target(false)
+        .json()
+        .init();
+
     // 启动 mock server
     let mock = mock_router().await;
     let mock_listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{MOCK_PORT}"))
@@ -301,7 +309,7 @@ async fn main() {
     // axum 0.7 的 Serve 实现的是 IntoFuture(而非 Future)，不能直接交给 tokio::spawn，
     // 需包进 async 块内 await，否则报 "Serve is not a future"
     tokio::spawn(async move { axum::serve(mock_listener, mock).await });
-    println!("[Rust MockServer] starting on http://localhost:{MOCK_PORT}");
+    tracing::info!(mock_port = MOCK_PORT, "mock server starting");
 
     let cb = Arc::new(CircuitBreaker::new(3, Duration::from_secs(10)));
     let app = Router::new()
@@ -310,6 +318,6 @@ async fn main() {
         .with_state(cb.clone());
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8118").await.unwrap();
-    println!("[Rust] http-client server starting on 0.0.0.0:8118");
+    tracing::info!(addr = "0.0.0.0:8118", "server starting");
     axum::serve(listener, app).await.unwrap();
 }

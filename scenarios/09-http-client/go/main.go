@@ -20,14 +20,43 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
+
+// ==================== zap 结构化日志初始化 ====================
+
+// logger 全局 SugaredLogger（JSON 输出 + stdout + DEBUG 级别 + caller 信息）
+var logger *zap.SugaredLogger
+
+func init() {
+	cfg := zap.NewProductionConfig()
+	cfg.OutputPaths = []string{"stdout"}
+	cfg.ErrorOutputPaths = []string{"stderr"}
+	cfg.EncoderConfig.TimeKey = "time"
+	cfg.EncoderConfig.LevelKey = "level"
+	cfg.EncoderConfig.MessageKey = "msg"
+	cfg.EncoderConfig.CallerKey = "caller"
+	cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	cfg.EncoderConfig.EncodeLevel = zapcore.LowercaseLevelEncoder
+	cfg.EncoderConfig.EncodeCaller = zapcore.ShortCallerEncoder
+	cfg.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel) // 最低 DEBUG 级别
+	cfg.Sampling = nil                                    // 关闭采样，保证 bench 等场景日志完整
+
+	l, err := cfg.Build()
+	if err != nil {
+		panic(fmt.Sprintf("zap init failed: %v", err))
+	}
+	logger = l.Sugar()
+}
 
 const (
 	listenAddr = ":8116"
@@ -141,7 +170,7 @@ func callExternal(ctx context.Context, client *http.Client, cb *CircuitBreaker, 
 			continue
 		}
 
-		log.Printf("[HTTP-CLIENT] → GET %s (attempt %d)", url, attempt+1)
+		logger.Debugw("http request", "url", url, "attempt", attempt+1)
 		httpResp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
@@ -216,8 +245,10 @@ func startMockServer() {
 	})
 
 	go func() {
-		log.Printf("[Go MockServer] starting on http://localhost%s", mockAddr)
-		log.Fatal(http.ListenAndServe(mockAddr, mux))
+		logger.Infow("MockServer starting", "addr", mockAddr)
+		if err := http.ListenAndServe(mockAddr, mux); err != nil {
+			logger.Errorw("MockServer failed", "error", err)
+		}
 	}()
 }
 
@@ -225,12 +256,7 @@ func startMockServer() {
 
 var globalCircuitBreaker = NewCircuitBreaker(3, 10*time.Second)
 
-func callExternalHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
+func callExternalHandler(c *gin.Context) {
 	var req struct {
 		URL        string `json:"url"`
 		TimeoutMs  *int   `json:"timeout_ms"`
@@ -238,8 +264,8 @@ func callExternalHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	// 解码失败必须显式 400：Go 的 json.Decode 遇类型不匹配会留下零值，
 	// 不检查 err 的话 {"retry_times":"abc"} 会静默按默认值执行。
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid json body: "+err.Error(), http.StatusBadRequest)
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "invalid json body: " + err.Error()})
 		return
 	}
 	// 指针字段区分"缺省"与"显式 0"：retry_times=0 表示不重试，
@@ -253,11 +279,11 @@ func callExternalHandler(w http.ResponseWriter, r *http.Request) {
 	timeoutMs := firstOf(req.TimeoutMs, 5000)
 	retryTimes := firstOf(req.RetryTimes, 2) // 总共最多 3 次（含首次）
 	if timeoutMs <= 0 {
-		http.Error(w, "timeout_ms must be positive", http.StatusBadRequest)
+		c.JSON(400, gin.H{"error": "timeout_ms must be positive"})
 		return
 	}
 	if retryTimes < 0 {
-		http.Error(w, "retry_times must be >= 0", http.StatusBadRequest)
+		c.JSON(400, gin.H{"error": "retry_times must be >= 0"})
 		return
 	}
 
@@ -276,13 +302,11 @@ func callExternalHandler(w http.ResponseWriter, r *http.Request) {
 	resp, _ := callExternal(context.Background(), client, globalCircuitBreaker,
 		url, retryTimes, time.Duration(timeoutMs)*time.Millisecond)
 
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	json.NewEncoder(w).Encode(resp)
+	c.JSON(200, resp)
 }
 
-func healthHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+func healthHandler(c *gin.Context) {
+	c.JSON(200, gin.H{
 		"service":   "http-client-go",
 		"mock_port": strings.TrimPrefix(mockAddr, ":"),
 		"cb_state":  globalCircuitBreaker.state,
@@ -292,17 +316,19 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 // ==================== main ====================
 
 func main() {
-	startMockServer()
+	defer logger.Sync() // flush 日志
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/call-external", callExternalHandler)
-	mux.HandleFunc("/health", healthHandler)
+	startMockServer()
 
 	// 跑 httptest（占位防止未使用）
 	_ = httptest.NewServer
 
-	log.Printf("[Go] http-client server starting on %s", listenAddr)
-	if err := http.ListenAndServe(listenAddr, mux); err != nil {
-		log.Fatalf("server failed: %v", err)
+	r := gin.Default() // 自带 Recovery + Logger 中间件
+	r.POST("/call-external", callExternalHandler)
+	r.GET("/health", healthHandler)
+
+	logger.Infow("server starting", "addr", listenAddr)
+	if err := r.Run(listenAddr); err != nil {
+		logger.Fatalw("server failed", "error", err)
 	}
 }

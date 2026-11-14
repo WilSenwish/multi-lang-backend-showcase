@@ -17,8 +17,16 @@
  * - Rust Option::None 显式表达，TS undefined 隐式存在
  */
 import Fastify from 'fastify';
+import pino from 'pino';
 
 const PORT = 8094;
+
+// pino 初始化：JSON 格式 + stdout + 最低 DEBUG 级别
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'debug',
+  timestamp: pino.stdTimeFunctions.isoTime,
+  transport: { target: 'pino/file', options: { destination: 1 } }
+});
 
 // 演示用的 demo 对象（注意 TS 里 null vs undefined 的差异）
 function demoUser() {
@@ -40,7 +48,7 @@ interface DeserializeBody {
   json_string: string;
 }
 
-const fastify = Fastify({ logger: true });
+const fastify = Fastify({ logger });
 
 // GET /demo — 返回标准测试对象
 fastify.get('/demo', async () => {
@@ -130,9 +138,9 @@ fastify.get('/bench', async () => {
 const startServer = async () => {
   try {
     await fastify.listen({ port: PORT, host: '0.0.0.0' });
-    fastify.log.info(`[TS-Node] json-serialize server listening on ${PORT}`);
+    logger.info({ msg: 'server starting', addr: `0.0.0.0:${PORT}` });
   } catch (err) {
-    fastify.log.error(err);
+    logger.error({ err }, 'server failed to start');
     process.exit(1);
   }
 };

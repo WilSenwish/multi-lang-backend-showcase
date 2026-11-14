@@ -4,12 +4,40 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"log"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
+
+// ==================== zap 结构化日志初始化 ====================
+
+// logger 全局 SugaredLogger（JSON 输出 + stdout + DEBUG 级别 + caller 信息）
+var logger *zap.SugaredLogger
+
+func init() {
+	cfg := zap.NewProductionConfig()
+	cfg.OutputPaths = []string{"stdout"}
+	cfg.ErrorOutputPaths = []string{"stderr"}
+	cfg.EncoderConfig.TimeKey = "time"
+	cfg.EncoderConfig.LevelKey = "level"
+	cfg.EncoderConfig.MessageKey = "msg"
+	cfg.EncoderConfig.CallerKey = "caller"
+	cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	cfg.EncoderConfig.EncodeLevel = zapcore.LowercaseLevelEncoder
+	cfg.EncoderConfig.EncodeCaller = zapcore.ShortCallerEncoder
+	cfg.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel) // 最低 DEBUG 级别
+	cfg.Sampling = nil                                    // 关闭采样，保证 bench 等场景日志完整
+
+	l, err := cfg.Build()
+	if err != nil {
+		panic(fmt.Sprintf("zap init failed: %v", err))
+	}
+	logger = l.Sugar()
+}
 
 // 场景 04：文件读写 & 目录遍历 — Go 实现
 //
@@ -37,15 +65,10 @@ type WriteRequest struct {
 // ==================== 3 个 Handler ====================
 
 // POST /file/write
-func writeHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
+func writeHandler(c *gin.Context) {
 	var req WriteRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "invalid json: " + err.Error()})
 		return
 	}
 
@@ -55,7 +78,9 @@ func writeHandler(w http.ResponseWriter, r *http.Request) {
 	content := contentToString(req.Content)
 	// 确保父目录存在
 	if dir := filepath.Dir(req.Path); dir != "." && dir != "/" {
-		os.MkdirAll(dir, 0755)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			logger.Warnw("mkdir failed", "dir", dir, "error", err)
+		}
 	}
 
 	var err error
@@ -72,6 +97,7 @@ func writeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
+		logger.Errorw("write file failed", "path", req.Path, "error", err)
 		resp["success"] = false
 		resp["error"] = err.Error()
 	} else {
@@ -81,43 +107,38 @@ func writeHandler(w http.ResponseWriter, r *http.Request) {
 		resp["append"] = req.Append
 	}
 
-	writeJSON(w, resp)
+	writeJSON(c, 200, resp)
 }
 
 // GET /file/read
-func readHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	path := r.URL.Query().Get("path")
+func readHandler(c *gin.Context) {
+	path := c.Query("path")
 	if path == "" {
-		http.Error(w, "missing path param", http.StatusBadRequest)
+		c.JSON(400, gin.H{"error": "missing path param"})
 		return
 	}
 
 	info, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			http.Error(w, "文件不存在: "+path, http.StatusNotFound)
+			c.JSON(404, gin.H{"error": "文件不存在: " + path})
 		} else {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			c.JSON(500, gin.H{"error": err.Error()})
 		}
 		return
 	}
 	if info.IsDir() {
-		http.Error(w, "不是文件: "+path, http.StatusBadRequest)
+		c.JSON(400, gin.H{"error": "不是文件: " + path})
 		return
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
 
-	writeJSON(w, map[string]interface{}{
+	writeJSON(c, 200, map[string]interface{}{
 		"path":    path,
 		"content": string(data),
 		"bytes":   len(data),
@@ -125,30 +146,25 @@ func readHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // GET /file/scan
-func scanHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	dir := r.URL.Query().Get("dir")
+func scanHandler(c *gin.Context) {
+	dir := c.Query("dir")
 	if dir == "" {
-		http.Error(w, "missing dir param", http.StatusBadRequest)
+		c.JSON(400, gin.H{"error": "missing dir param"})
 		return
 	}
-	recursive := r.URL.Query().Get("recursive") != "false" // 默认 true
+	recursive := c.DefaultQuery("recursive", "true") != "false" // 默认 true
 
 	info, err := os.Stat(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			http.Error(w, "目录不存在: "+dir, http.StatusNotFound)
+			c.JSON(404, gin.H{"error": "目录不存在: " + dir})
 		} else {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			c.JSON(500, gin.H{"error": err.Error()})
 		}
 		return
 	}
 	if !info.IsDir() {
-		http.Error(w, "不是目录: "+dir, http.StatusBadRequest)
+		c.JSON(400, gin.H{"error": "不是目录: " + dir})
 		return
 	}
 
@@ -173,7 +189,7 @@ func scanHandler(w http.ResponseWriter, r *http.Request) {
 		// 非递归：os.ReadDir 一层
 		entries, err := os.ReadDir(dir)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			c.JSON(500, gin.H{"error": err.Error()})
 			return
 		}
 		for _, entry := range entries {
@@ -186,7 +202,7 @@ func scanHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, map[string]interface{}{
+	writeJSON(c, 200, map[string]interface{}{
 		"dir":         dir,
 		"recursive":   recursive,
 		"files":       fileCount,
@@ -213,31 +229,31 @@ func contentToString(v interface{}) string {
 	}
 }
 
-func writeJSON(w http.ResponseWriter, v interface{}) {
+func writeJSON(c *gin.Context, code int, v interface{}) {
 	// 与 contentToString 同理：Encoder + SetEscapeHTML(false)，
 	// 否则读回的内容里 < > & 会变成 \u003c 等转义序列，五门语言对不上。
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(v); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	w.Write(buf.Bytes())
+	c.Data(code, "application/json; charset=utf-8", buf.Bytes())
 }
 
 // ==================== main ====================
 
 func main() {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/file/write", writeHandler)
-	mux.HandleFunc("/file/read", readHandler)
-	mux.HandleFunc("/file/scan", scanHandler)
+	defer logger.Sync() // flush 日志
 
-	log.Printf("[Go] file-io server starting on %s", listenAddr)
-	if err := http.ListenAndServe(listenAddr, mux); err != nil {
-		log.Fatalf("server failed: %v", err)
+	r := gin.Default() // 自带 Recovery + Logger 中间件
+	r.POST("/file/write", writeHandler)
+	r.GET("/file/read", readHandler)
+	r.GET("/file/scan", scanHandler)
+
+	logger.Infow("server starting", "addr", listenAddr)
+	if err := r.Run(listenAddr); err != nil {
+		logger.Fatalw("server failed", "error", err)
 	}
 }

@@ -22,6 +22,35 @@ from typing import Any, Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+# ==================== structlog 结构化日志初始化 ====================
+import logging
+import sys
+
+import structlog
+
+
+def _configure_structlog() -> None:
+    """配置 structlog：JSON 格式输出到 stdout，最低 DEBUG 级别"""
+    structlog.configure(
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.processors.StackInfoRenderer(),
+            structlog.dev.set_exc_info,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.ExceptionPrettyPrinter(),
+            structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(logging.DEBUG),
+        context_class=dict,
+        logger_factory=structlog.PrintLoggerFactory(file=sys.stdout),
+        cache_logger_on_first_use=True,
+    )
+
+
+_configure_structlog()
+logger = structlog.get_logger()
+
 app = FastAPI(title="file-io-python", version="1.0.0")
 
 
@@ -118,4 +147,6 @@ def scan_dir(dir: Optional[str] = None, recursive: bool = True) -> dict:
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8097)
+
+    logger.info("service starting", port=8097, title="file-io-python")
+    uvicorn.run(app, host="0.0.0.0", port=8097, log_level="debug")

@@ -35,6 +35,34 @@ import sys
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
+# ==================== structlog 结构化日志初始化 ====================
+import logging
+
+import structlog
+
+
+def _configure_structlog() -> None:
+    """配置 structlog：JSON 格式输出到 stdout，最低 DEBUG 级别"""
+    structlog.configure(
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.processors.StackInfoRenderer(),
+            structlog.dev.set_exc_info,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.ExceptionPrettyPrinter(),
+            structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(logging.DEBUG),
+        context_class=dict,
+        logger_factory=structlog.PrintLoggerFactory(file=sys.stdout),
+        cache_logger_on_first_use=True,
+    )
+
+
+_configure_structlog()
+logger = structlog.get_logger()
+
 # 输出被重定向到文件时，stdout 默认是块缓冲；而进程在优雅关闭完成后会被信号直接终止
 # （uvicorn 恢复信号默认处置，进程以 -15 退出，atexit 与缓冲区 flush 都不会执行），
 # 未 flush 的缓冲会整块丢失。这里改成行缓冲，保证演示输出不会凭空消失。
@@ -61,7 +89,7 @@ def handle_signal(signum, _frame=None, prev=None):
         name = signal.Signals(signum).name
     except ValueError:
         name = str(signum)
-    print(f"\n[PYTHON] 收到信号: {name}")
+    logger.info("signal received", name=name)
     shutdown_event.set()
     if callable(prev):
         # prev 即 uvicorn 的 Server.handle_exit（uvicorn serve() 阶段用 signal.signal 注册的）
@@ -71,17 +99,14 @@ def handle_signal(signum, _frame=None, prev=None):
 # ==================== Lifespan（FastAPI 启动/关闭钩子） ====================
 
 async def lifespan(app: FastAPI):
-    print("========================================")
-    print("场景 12：优雅关闭 — Python 实现")
-    print("信号：kill -TERM <pid> 或 Ctrl+C")
-    print("========================================")
+    logger.info("graceful shutdown demo", signals="kill -TERM <pid> 或 Ctrl+C")
 
     # 信号处理器：注册到当前事件循环（覆盖 uvicorn 的注册，但把手势交还给它的处理器）
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         prev = signal.getsignal(sig)  # uvicorn 注册的 handle_exit（绑定方法）
         loop.add_signal_handler(sig, handle_signal, sig, None, prev)
-    print("[PYTHON] 已注册 SIGTERM / SIGINT 处理器（信号将交还给 uvicorn 的关闭流程）")
+    logger.info("signal handlers registered", signals="SIGTERM/SIGINT")
 
     yield  # 启动服务
 
@@ -89,22 +114,18 @@ async def lifespan(app: FastAPI):
     global shutting_down
     shutting_down = True
 
-    print("========================================")
-    print("[GRACEFUL SHUTDOWN] Step 1/4: 标记 shutting_down=True")
+    logger.info("shutdown phase 1/4: marking shutting_down=True")
+    logger.info("shutdown phase 2/4: stop accepting new requests (handled by uvicorn)")
 
-    print("[GRACEFUL SHUTDOWN] Step 2/4: 停止接收新请求")
-    # FastAPI/uvicorn 会自动处理
-
-    print("[GRACEFUL SHUTDOWN] Step 3/4: 等待 in-flight 请求完成 (timeout=10s)")
+    logger.info("shutdown phase 3/4: waiting for in-flight requests", timeout_s=10)
     try:
         await asyncio.wait_for(wait_no_requests(), timeout=10.0)
-        print("[GRACEFUL SHUTDOWN] ✅ 所有请求完成")
+        logger.info("all in-flight requests completed")
     except asyncio.TimeoutError:
-        print(f"[GRACEFUL SHUTDOWN] ⚠️ 超时！还有 {in_flight_count} 个请求未完成")
+        logger.warning("shutdown timeout, some requests still pending", pending=in_flight_count)
 
-    print("[GRACEFUL SHUTDOWN] Step 4/4: 释放资源")
-    print("[GRACEFUL SHUTDOWN] ✅ Shutdown complete")
-    print("========================================")
+    logger.info("shutdown phase 4/4: releasing resources")
+    logger.info("shutdown complete")
 
 
 async def wait_no_requests():
@@ -115,7 +136,7 @@ async def wait_no_requests():
             current = in_flight_count
         if current == 0:
             return
-        print(f"[GRACEFUL SHUTDOWN]   等待 {current} 个请求完成...")
+        logger.debug("waiting for in-flight requests", remaining=current)
         await asyncio.sleep(0.2)
 
 
@@ -130,11 +151,11 @@ async def long_task():
     async with count_lock:
         in_flight_count += 1
         id_val = in_flight_count
-    print(f"[REQUEST] 开始处理 long-task, id={id_val}, in-flight={in_flight_count}")
+    logger.info("long-task started", id=id_val, in_flight=in_flight_count)
 
     try:
         await asyncio.sleep(3.0)
-        print(f"[REQUEST] 完成 long-task, id={id_val}")
+        logger.info("long-task completed", id=id_val)
     finally:
         async with count_lock:
             in_flight_count -= 1
@@ -156,10 +177,11 @@ async def health():
 if __name__ == "__main__":
     import uvicorn
 
+    logger.info("service starting", port=8132, title="graceful-shutdown-python")
     uvicorn.run(
         app,
         host="0.0.0.0",
         port=8132,
-        log_level="info",
+        log_level="debug",
         timeout_graceful_shutdown=10,  # uvicorn 优雅关闭超时 10s
     )

@@ -15,8 +15,16 @@
  * 思路：用一个队列存 Promise 工厂函数，同时最多 N 个在执行
  */
 import Fastify, { FastifyReply } from 'fastify';
+import pino from 'pino';
 
 const PORT = 8089;
+
+// pino 初始化：JSON 格式 + stdout + 最低 DEBUG 级别
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'debug',
+  timestamp: pino.stdTimeFunctions.isoTime,
+  transport: { target: 'pino/file', options: { destination: 1 } }
+});
 
 // ========== 手写 p-limit ==========
 /**
@@ -87,7 +95,7 @@ interface RunResponse {
   results: TaskResult[];
 }
 
-const fastify = Fastify({ logger: true });
+const fastify = Fastify({ logger });
 
 // 单个异步任务：sleep 指定毫秒后返回
 function executeTask(id: number, delayMs: number): Promise<TaskResult> {
@@ -174,9 +182,9 @@ fastify.all('/run', async (request, reply) => {
 const startServer = async () => {
   try {
     await fastify.listen({ port: PORT, host: '0.0.0.0' });
-    fastify.log.info(`[TS-Node] concurrent-task server listening on ${PORT}`);
+    logger.info({ msg: 'server starting', addr: `0.0.0.0:${PORT}` });
   } catch (err) {
-    fastify.log.error(err);
+    logger.error({ err }, 'server failed to start');
     process.exit(1);
   }
 };

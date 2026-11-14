@@ -77,7 +77,7 @@ async fn init_db() -> SqlitePool {
     .await
     .expect("建表失败");
 
-    println!("[Rust] DB 初始化成功（SQLite: demo_rs.db）");
+    tracing::info!("DB initialized (SQLite: demo_rs.db)");
     pool
 }
 
@@ -233,8 +233,16 @@ async fn delete_user(
 
 #[tokio::main]
 async fn main() {
-    println!("DB CRUD + 连接池 — Rust sqlx 实现");
-    println!("核心亮点：sqlx 返回值编译期类型安全（FromRow trait）");
+    // 初始化 tracing 日志：JSON 格式 + 最低 DEBUG 级别 + stdout
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| "debug".into()))
+        .with_target(false)
+        .json()
+        .init();
+
+    tracing::debug!("DB CRUD + connection pool — Rust sqlx impl");
+    tracing::debug!("core highlight: sqlx return value compile-time type safety (FromRow trait)");
 
     let pool = init_db().await;
     let app = Router::new()
@@ -244,6 +252,6 @@ async fn main() {
         .with_state(Arc::new(pool));
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8128").await.unwrap();
-    println!("[Rust] db-crud-pool server starting on 0.0.0.0:8128");
+    tracing::info!(addr = "0.0.0.0:8128", "server starting");
     axum::serve(listener, app).await.unwrap();
 }

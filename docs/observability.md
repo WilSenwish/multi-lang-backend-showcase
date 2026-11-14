@@ -64,11 +64,26 @@
 
 ## 5. 在本仓库中的落地点
 
-本文是**横向调研**，真正的可运行实现在这两个场景：
+### 全场景统一日志规范（2026-11-14 升级）
+
+**所有 17 个场景（00~17）的五门语言**，已统一接入生产级结构化日志框架：
+
+| 语言 | 日志框架 | 级别 | 输出 | 配置方式 | 覆盖场景 |
+|------|---------|------|------|---------|---------|
+| Java | SLF4J + Logback + logstash-logback-encoder | DEBUG | JSON → stdout | `logback-spring.xml` | 16 个（03 CLI 跳过） |
+| Go | go.uber.org/zap v1.27.0 | DEBUG | JSON → stdout | `init()` 全局初始化 | 17 个全部 |
+| Python | structlog v24.4.0 | DEBUG | JSON → stdout | `_configure_structlog()` | 17 个全部 |
+| Rust | tracing + tracing-subscriber | DEBUG | JSON → stdout | `main()` 开头初始化 | 16 个（05 单测跳过） |
+| TS(Node) | pino ^9.6.0 | DEBUG | JSON → stdout | `const logger = pino({...})` | 16 个（05 单测跳过） |
+
+> 场景 03-cli-tool（CLI 工具）：只替换错误输出为日志框架，正常 stdout 保留。
+> 场景 05-unit-test-mock（纯单测）：无 main，不接入日志。
+
+### 结构化日志专题场景
 
 | 专题 | 对应场景 | 各语言实际选型 |
 |------|---------|---------------|
-| 结构化日志 | [`07-structured-logging`](../scenarios/07-structured-logging/README.md) | Java：SLF4J + `logstash-logback-encoder`｜Go：`zap`｜Python：`structlog`｜Rust：`tracing` + `tracing-subscriber(json)`｜TS：`pino` |
+| 结构化日志深度对比 | [`07-structured-logging`](../scenarios/07-structured-logging/README.md) | Java：SLF4J + `logstash-logback-encoder`｜Go：`zap`（含 context 注入 requestId）｜Python：`structlog` + contextvars｜Rust：`tracing` + `tracing-subscriber(json)`｜TS：`pino` |
 | 优雅关闭（与可观测性强相关） | [`12-graceful-shutdown`](../scenarios/12-graceful-shutdown/README.md) | 关闭期的 readiness 探针与在途请求处理，见该场景 README |
 
 > 场景 07 的五门语言统一输出 `level` / `msg` 等字段的 JSON 行，可直接用 `jq` 对比结构差异。

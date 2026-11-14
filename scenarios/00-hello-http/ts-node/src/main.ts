@@ -7,10 +7,18 @@
  *   → {"msg": "hello world"}  // name 缺省
  */
 import Fastify from 'fastify';
+import pino from 'pino';
 import { z } from 'zod';
 
 const DEFAULT_NAME = 'world';
 const PORT = 8084;
+
+// pino 初始化：JSON 格式 + stdout + 最低 DEBUG 级别
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'debug',
+  timestamp: pino.stdTimeFunctions.isoTime,
+  transport: { target: 'pino/file', options: { destination: 1 } }
+});
 
 // 响应 DTO 类型
 interface HelloResponse {
@@ -18,7 +26,7 @@ interface HelloResponse {
 }
 
 const fastify = Fastify({
-  logger: true,
+  logger,
 });
 
 // zod 用于运行时校验（fastify 的 schema 字段需为 JSON Schema，不能传 zod.parse 函数）
@@ -60,9 +68,9 @@ fastify.all<{ Querystring: { name?: string } }>(
 const start = async () => {
   try {
     await fastify.listen({ port: PORT, host: '0.0.0.0' });
-    fastify.log.info(`[TS-Node] hello-http server listening on ${PORT}`);
+    logger.info({ msg: 'server starting', addr: `0.0.0.0:${PORT}` });
   } catch (err) {
-    fastify.log.error(err);
+    logger.error({ err }, 'server failed to start');
     process.exit(1);
   }
 };

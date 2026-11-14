@@ -13,9 +13,17 @@
  * - Prisma 可以生成 TS 类型，但 better-sqlite3 原生就支持
  */
 import Fastify from 'fastify';
+import pino from 'pino';
 import Database from 'better-sqlite3';
 
 const PORT = 8129;
+
+// pino 初始化：JSON 格式 + stdout + 最低 DEBUG 级别
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'debug',
+  timestamp: pino.stdTimeFunctions.isoTime,
+  transport: { target: 'pino/file', options: { destination: 1 } }
+});
 
 // ==================== DB 初始化 ====================
 
@@ -36,7 +44,7 @@ db.exec(`
   )
 `);
 
-console.log('[TS-Node] DB 初始化成功（SQLite: demo_ts.db）');
+logger.info({ msg: 'DB initialized', db: 'demo_ts.db' });
 
 // ==================== 类型定义 ====================
 
@@ -50,7 +58,7 @@ interface User {
 
 // ==================== Fastify 服务 ====================
 
-const fastify = Fastify({ logger: true });
+const fastify = Fastify({ logger });
 
 // CREATE
 fastify.post('/users', async (request, reply) => {
@@ -151,9 +159,9 @@ fastify.get('/health', async () => ({
 const start = async () => {
   try {
     await fastify.listen({ port: PORT, host: '0.0.0.0' });
-    console.log(`[TS-Node] db-crud-pool server starting on ${PORT}`);
+    logger.info({ msg: 'server starting', addr: `0.0.0.0:${PORT}` });
   } catch (err) {
-    fastify.log.error(err);
+    logger.error({ err }, 'server failed to start');
     process.exit(1);
   }
 };

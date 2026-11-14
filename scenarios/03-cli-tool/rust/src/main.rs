@@ -85,6 +85,14 @@ fn print_result(label: &str, lines: usize, words: usize, chars: usize,
 }
 
 fn main() {
+    // 初始化 tracing 日志：JSON 格式 + 最低 DEBUG 级别 + stdout
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| "debug".into()))
+        .with_target(false)
+        .json()
+        .init();
+
     let cli = Cli::parse();
 
     let mut total_l = 0usize;
@@ -103,7 +111,7 @@ fn main() {
                 total_c += c;
             }
             Err(e) => {
-                eprintln!("count: {e}");
+                tracing::error!(error = %e, "count");
                 process::exit(1);
             }
         }

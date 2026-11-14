@@ -13,8 +13,16 @@
  */
 
 import Fastify from "fastify";
+import pino from "pino";
 
 const PORT = 8149;
+
+// pino 初始化：JSON 格式 + stdout + 最低 DEBUG 级别
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'debug',
+  timestamp: pino.stdTimeFunctions.isoTime,
+  transport: { target: 'pino/file', options: { destination: 1 } }
+});
 
 type Outcome = "pending" | "completed" | "cancelled" | "failed";
 
@@ -64,7 +72,7 @@ function validate(tasks: number, taskMs: number, failIndex: number, failAfterMs:
   return null;
 }
 
-const app = Fastify({ logger: false });
+const app = Fastify({ logger });
 
 app.get("/health", async () => ({
   service: "structured-concurrency",
@@ -172,5 +180,5 @@ app.post("/fanout", async (req, reply) => {
 });
 
 app.listen({ port: PORT, host: "0.0.0.0" }).then(() => {
-  console.log(`structured-concurrency (ts-node/AbortController) listening on ${PORT}`);
+  logger.info({ msg: 'server starting', addr: `0.0.0.0:${PORT}` });
 });

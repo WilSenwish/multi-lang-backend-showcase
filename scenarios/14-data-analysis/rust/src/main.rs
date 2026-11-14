@@ -197,10 +197,18 @@ async fn analyze(Json(req): Json<AnalyzeRequest>) -> Result<Json<AnalyzeResponse
 
 #[tokio::main]
 async fn main() {
+    // 初始化 tracing 日志：JSON 格式 + 最低 DEBUG 级别 + stdout
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| "debug".into()))
+        .with_target(false)
+        .json()
+        .init();
+
     let app = Router::new().route("/health", get(health)).route("/analyze", post(analyze));
 
     let addr = format!("0.0.0.0:{}", PORT);
-    println!("data-analysis (rust/polars) listening on {}", addr);
+    tracing::info!(addr = %addr, "server starting");
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }

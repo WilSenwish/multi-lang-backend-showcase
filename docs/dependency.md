@@ -171,3 +171,87 @@ tokio = { version = "1", features = ["full"] }
 | 快速原型、环境受限 | Python / TS | 不需要编译，直接运行 |
 | 大型企业、依赖众多 | Java | 成熟的依赖管理和版本治理 |
 | Monorepo 管理多包 | Rust / pnpm | 原生 workspace 支持 |
+
+---
+
+## 5. 本仓库实际使用的生产级组件
+
+> 2026-11-14 全面升级：所有场景统一到工业级开源组件，消除手搓实现。
+
+### Web 框架
+
+| 语言 | 组件 | 版本 | 说明 |
+|------|------|------|------|
+| Java | Spring Boot | 3.2.0 | 生态最全，约定优于配置 |
+| Go | **gin-gonic/gin** | v1.10.0 | Go 生态事实标准（之前用 net/http 手搓） |
+| Python | FastAPI | 0.115.0 | async + Pydantic 类型安全 |
+| Rust | axum | 0.7 | 零成本抽象，与 tokio 深度整合 |
+| TS(Node) | Fastify | 4.x | 快，自带 pino 日志 |
+
+### 结构化日志（最低 DEBUG 级别，JSON 输出到 stdout）
+
+| 语言 | 组件 | 版本 | 说明 |
+|------|------|------|------|
+| Java | SLF4J + Logback + **logstash-logback-encoder** | 7.4 | SpringBoot 默认，LogstashEncoder 输出 JSON |
+| Go | **go.uber.org/zap** | v1.27.0 | 零分配，Go 结构化日志事实标准（之前用标准库 log） |
+| Python | **structlog** | 24.4.0 | 灵活链式 API，contextvars 注入链路字段（07 已有） |
+| Rust | **tracing + tracing-subscriber** | 0.1 / 0.3 | tracing 是 API 层，subscriber 负责 JSON 输出（之前用 println!） |
+| TS(Node) | **pino** | ^9.6.0 | Node 生态最快 JSON 日志库（07 已有） |
+
+### 业务算法组件（替换手搓实现）
+
+| 场景 | 语言 | 手搓实现 | → 生产级组件 | 版本 |
+|------|------|---------|-------------|------|
+| 09-http-client | Python | CircuitBreaker 熔断类 | **pybreaker** | 1.0.1 |
+| 09-http-client | Python | 手动指数退避循环 | **tenacity** | 9.0.0 |
+| 09-http-client | Python | http.server Mock Server | **httpx.MockTransport** | httpx 内置 |
+| 10-rate-limit | Python | TokenBucket 类 | **slowapi** | 0.1.9 |
+| 10-rate-limit | Go | 自己实现令牌桶逻辑（已用官方库） | golang.org/x/time/rate | v0.5.0 ✅ 保留 |
+| 11-db-crud-pool | Go | 自己管理连接池参数 | sql.DB + SetMaxOpenConns | 标准库 ✅ 保留 |
+| 12-graceful-shutdown | Go | 优雅关闭信号处理 | signal.NotifyContext + server.Shutdown | 标准库 ✅ 保留 |
+
+### Python 根目录统一依赖（pyproject.toml）
+
+```toml
+dependencies = [
+    # Web 框架
+    "fastapi==0.115.0",
+    "uvicorn[standard]==0.30.6",
+    "pydantic==2.9.2",
+    # HTTP 客户端
+    "httpx==0.27.2",
+    # 业务组件
+    "pybreaker==1.0.1",    # 熔断（替换 09 手搓）
+    "slowapi==0.1.9",      # 限流（替换 10 手搓）
+    "tenacity==9.0.0",     # 重试（替换 09 手搓）
+    # 日志
+    "structlog==24.4.0",
+    # 配置
+    "pyyaml==6.0.2",
+]
+```
+
+### Go 依赖（各场景 go.mod）
+
+```
+# Web 框架（16 个场景）
+github.com/gin-gonic/gin v1.10.0
+
+# 日志（16 个场景）
+go.uber.org/zap v1.27.0
+
+# 业务组件（按场景）
+golang.org/x/time       v0.5.0  # 限流（场景 10）
+golang.org/x/sync       v0.10.0 # errgroup（场景 15）
+github.com/spf13/viper  v1.19.0 # 配置（场景 08）
+```
+
+### 环境管理
+
+| 工具 | 用途 | 配置 |
+|------|------|------|
+| **uv** | Python 依赖管理 + 虚拟环境 | 根目录 `.venv`，`uv sync` 同步 pyproject.toml |
+| **mise** | SDK 版本管理 | `mise.toml` 固定 `java = "zulu-17"` |
+| **go mod** | Go 依赖管理 | 各场景独立 go.mod |
+| **cargo** | Rust 依赖管理 | 各场景独立 Cargo.toml |
+| **npm** | Node 依赖管理 | 各场景独立 package.json |

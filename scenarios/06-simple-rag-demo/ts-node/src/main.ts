@@ -8,10 +8,18 @@
  * 4. Node 的单线程模型 + libuv 异步，IO 密集（文件摄入）效率高
  */
 import Fastify from 'fastify';
+import pino from 'pino';
 import * as fs from 'fs';
 import * as path from 'path';
 
 const PORT = 8104;
+
+// pino 初始化：JSON 格式 + stdout + 最低 DEBUG 级别
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'debug',
+  timestamp: pino.stdTimeFunctions.isoTime,
+  transport: { target: 'pino/file', options: { destination: 1 } }
+});
 
 // ==================== 数据结构 ====================
 
@@ -149,7 +157,7 @@ function mockAnswer(question: string, sources: SourceResult[]): string {
 // ==================== Fastify 服务 ====================
 
 const store = new RagStore();
-const fastify = Fastify({ logger: true });
+const fastify = Fastify({ logger });
 
 interface IngestBody { file_path: string; }
 interface AskBody { question: string; top_k?: number; }
@@ -225,9 +233,9 @@ fastify.all('/health', async (request, reply) => {
 const startServer = async () => {
   try {
     await fastify.listen({ port: PORT, host: '0.0.0.0' });
-    fastify.log.info(`[TS-Node] simple-rag server listening on ${PORT}`);
+    logger.info({ msg: 'server starting', addr: `0.0.0.0:${PORT}` });
   } catch (err) {
-    fastify.log.error(err);
+    logger.error({ err }, 'server failed to start');
     process.exit(1);
   }
 };

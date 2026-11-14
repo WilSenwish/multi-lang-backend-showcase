@@ -268,12 +268,20 @@ async fn handle_stats() -> Json<StatsBody> {
 
 #[tokio::main]
 async fn main() {
+    // 初始化 tracing 日志：JSON 格式 + 最低 DEBUG 级别 + stdout
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| "debug".into()))
+        .with_target(false)
+        .json()
+        .init();
+
     let app = Router::new()
         .route("/errors/:kind", get(handle_errors))
         .route("/stats", get(handle_stats));
 
     let addr = format!("127.0.0.1:{}", PORT);
-    println!("[rust] 17-error-handling listening on {}", addr);
+    tracing::info!(addr = %addr, "server starting");
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }

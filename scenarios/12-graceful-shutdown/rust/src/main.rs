@@ -37,13 +37,13 @@ struct AppState {
 async fn long_task(State(state): State<Arc<AppState>>) -> Response {
     let id = state.in_flight.fetch_add(1, Ordering::SeqCst);
     let in_flight = state.in_flight.load(Ordering::SeqCst);
-    println!("[REQUEST] 开始处理 long-task, id={}, in-flight={}", id, in_flight);
+    tracing::debug!(req_id = id, in_flight, "start processing long-task");
 
     // 模拟 3s 耗时（tokio sleep 不阻塞事件循环）
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     state.in_flight.fetch_sub(1, Ordering::SeqCst);
-    println!("[REQUEST] 完成 long-task, id={}", id);
+    tracing::debug!(req_id = id, "finished long-task");
 
     axum::Json(serde_json::json!({
         "ok": true,
@@ -73,10 +73,16 @@ async fn health(State(state): State<Arc<AppState>>) -> Response {
 
 #[tokio::main]
 async fn main() {
-    println!("========================================");
-    println!("场景 12：优雅关闭 — Rust 实现（axum + tokio）");
-    println!("信号：kill -TERM <pid> 或 Ctrl+C");
-    println!("========================================");
+    // 初始化 tracing 日志：JSON 格式 + 最低 DEBUG 级别 + stdout
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| "debug".into()))
+        .with_target(false)
+        .json()
+        .init();
+
+    tracing::info!("=== scene 12: graceful shutdown — Rust impl (axum + tokio) ===");
+    tracing::info!("signal: kill -TERM <pid> or Ctrl+C");
 
     let state = Arc::new(AppState {
         in_flight: AtomicUsize::new(0),
@@ -91,7 +97,7 @@ async fn main() {
 
     // 启动 HTTP 服务
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8133").await.unwrap();
-    println!("[Rust] server starting on 0.0.0.0:8133");
+    tracing::info!(addr = "0.0.0.0:8133", "server starting");
 
     let server = axum::serve(listener, app);
 
@@ -122,9 +128,8 @@ async fn main() {
             _ = sigterm => {},
         }
 
-        println!("========================================");
-        println!("[GRACEFUL SHUTDOWN] 收到关闭信号");
-        println!("[GRACEFUL SHUTDOWN] Step 1/4: 标记 shutting_down=true");
+        tracing::info!("=== graceful shutdown: signal received ===");
+        tracing::info!("=== step 1/4: mark shutting_down=true ===");
         shutdown_state.shutting_down.store(true, Ordering::SeqCst);
     };
 
@@ -135,26 +140,25 @@ async fn main() {
         .expect("server error");
 
     // 等待 in-flight 请求完成（超时 10s）
-    println!("[GRACEFUL SHUTDOWN] Step 2/4: 停止接收新请求");
-    println!("[GRACEFUL SHUTDOWN] Step 3/4: 等待 in-flight 请求完成 (timeout=10s)");
+    tracing::info!("=== step 2/4: stop accepting new requests ===");
+    tracing::info!("=== step 3/4: waiting for in-flight requests (timeout=10s) ===");
 
     let start = std::time::Instant::now();
     let timeout = Duration::from_secs(10);
     loop {
         let in_flight = state.in_flight.load(Ordering::SeqCst);
         if in_flight == 0 {
-            println!("[GRACEFUL SHUTDOWN] ✅ 所有请求完成");
+            tracing::info!("=== all requests completed ===");
             break;
         }
         if start.elapsed() >= timeout {
-            println!("[GRACEFUL SHUTDOWN] ⚠️ 超时！还有 {} 个请求未完成", in_flight);
+            tracing::warn!(remaining = in_flight, "timeout! requests still pending");
             break;
         }
-        println!("[GRACEFUL SHUTDOWN]   等待 {} 个请求完成...", in_flight);
+        tracing::debug!(remaining = in_flight, "waiting for requests to complete");
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    println!("[GRACEFUL SHUTDOWN] Step 4/4: 释放资源");
-    println!("[GRACEFUL SHUTDOWN] ✅ Shutdown complete");
-    println!("========================================");
+    tracing::info!("=== step 4/4: release resources ===");
+    tracing::info!("=== shutdown complete ===");
 }

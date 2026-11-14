@@ -127,7 +127,7 @@ func debugHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := withRequestContext(r.Context(), rc)
 	logger := logFromContext(ctx)
 
-	// Debug 级别：zap 默认 Info 才输出，Debug 不开
+	// Debug 级别：zap 默认 Info 才输出，Debug 不开 — 现在已调到 DEBUG
 	logger.Debugw("debug request received",
 		"param1", "value1",
 		"param2", 42,
@@ -234,11 +234,8 @@ func main() {
 	cfg.EncoderConfig.StacktraceKey = "stacktrace"
 	cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
 	cfg.EncoderConfig.EncodeLevel = zapcore.LowercaseLevelEncoder
-
-	// 关闭采样：zap 生产配置默认 Initial=100/Thereafter=100 —— 同一秒内结构相同的
-	// 日志超过 100 条后只保留 1/100。bench 打 1000 条实际只会落盘 ~109 条，
-	// 而响应里的 avgLogNs 显示"1ms 就写完了 1000 条"——声称值与真实值脱钩。
-	cfg.Sampling = nil
+	cfg.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel) // 调到 DEBUG 级别
+	cfg.Sampling = nil                                    // 关闭采样
 
 	l, err := cfg.Build()
 	if err != nil {
@@ -250,6 +247,7 @@ func main() {
 	sugar.Infow("server starting",
 		"addr", listenAddr,
 		"mode", "prod",
+		"level", "DEBUG",
 	)
 
 	mux := http.NewServeMux()

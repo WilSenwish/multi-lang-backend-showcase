@@ -97,13 +97,16 @@ Multi-Lang-Backend-Showcase/
 
 ```
 scenarios/XX-scenario-name/
-├── java/          # SpringBoot 可运行项目
-├── go/            # main.go + go.mod
-├── python/        # FastAPI / asyncio
-├── rust/          # axum + Cargo.toml
-├── ts-node/       # fastify + package.json
+├── java/          # SpringBoot + logback-spring.xml（LogstashEncoder JSON 日志）
+├── go/            # gin-gonic/gin + go.uber.org/zap（结构化日志）
+├── python/        # FastAPI + structlog（结构化日志）
+├── rust/          # axum + tracing/tracing-subscriber（结构化日志）
+├── ts-node/       # fastify + pino（结构化日志）
 └── README.md      # 本场景横向对比文档（统一模板）
 ```
+
+> **2026-11-14 全量升级**：所有场景已统一到生产级开源组件 + 结构化日志框架（DEBUG 级别 + JSON stdout）。
+> 详情见 [docs/dependency.md](docs/dependency.md) 和 [docs/observability.md](docs/observability.md)。
 
 ---
 
@@ -143,18 +146,21 @@ curl 'localhost:8084/hello?name=world'   # TS-Node
 **方式二：本地直接运行**
 
 ```bash
+# Python 依赖统一用根目录 .venv（uv 管理），首次使用：
+uv sync                       # 从 pyproject.toml 安装所有依赖到根目录 .venv
+
 # Java (端口 8080)
 cd scenarios/00-hello-http/java
 mvn spring-boot:run
 
-# Go (端口 8081)
+# Go (端口 8081) — 各场景独立 go.mod
 cd scenarios/00-hello-http/go
 go run main.go
 
-# Python (端口 8082)
+# Python (端口 8082) — 用根目录 .venv
 cd scenarios/00-hello-http/python
-pip install -r requirements.txt
-uvicorn main:app --port 8082
+../../../.venv/bin/python main.py
+# 或：uv run python scenarios/00-hello-http/python/main.py
 
 # Rust (端口 8083)
 cd scenarios/00-hello-http/rust
@@ -235,10 +241,11 @@ bash bench/http-bench.sh
 ## 🤝 贡献规范
 
 1. 同一个场景，**5 种语言的业务逻辑必须完全对齐**（输入输出一致）
-2. 使用社区主流框架，不要手写玩具轮子
-3. 每个 demo 必须写清楚**启动步骤**
-4. 不做过度封装，demo 追求简洁易懂
-5. 禁止大二进制提交到 git
+2. 使用**生产级开源组件**，不要手写玩具轮子（见 [docs/dependency.md](docs/dependency.md) 的组件清单）
+3. 日志必须接入**结构化日志框架**，最低 DEBUG 级别，JSON 输出到 stdout
+4. 每个 demo 必须写清楚**启动步骤**
+5. 不做过度封装，demo 追求简洁易懂
+6. 禁止大二进制提交到 git
 
 ---
 

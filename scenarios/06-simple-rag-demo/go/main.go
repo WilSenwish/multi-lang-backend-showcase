@@ -10,11 +10,8 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"log"
 	"math"
-	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -23,7 +20,37 @@ import (
 	"sync"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
+
+// ==================== zap 结构化日志初始化 ====================
+
+// logger 全局 SugaredLogger（JSON 输出 + stdout + DEBUG 级别 + caller 信息）
+var logger *zap.SugaredLogger
+
+func init() {
+	cfg := zap.NewProductionConfig()
+	cfg.OutputPaths = []string{"stdout"}
+	cfg.ErrorOutputPaths = []string{"stderr"}
+	cfg.EncoderConfig.TimeKey = "time"
+	cfg.EncoderConfig.LevelKey = "level"
+	cfg.EncoderConfig.MessageKey = "msg"
+	cfg.EncoderConfig.CallerKey = "caller"
+	cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	cfg.EncoderConfig.EncodeLevel = zapcore.LowercaseLevelEncoder
+	cfg.EncoderConfig.EncodeCaller = zapcore.ShortCallerEncoder
+	cfg.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel) // 最低 DEBUG 级别
+	cfg.Sampling = nil                                    // 关闭采样，保证 bench 等场景日志完整
+
+	l, err := cfg.Build()
+	if err != nil {
+		panic(fmt.Sprintf("zap init failed: %v", err))
+	}
+	logger = l.Sugar()
+}
 
 const listenAddr = ":8101"
 
@@ -82,6 +109,7 @@ func (s *Store) IngestFile(filePath string) (int, error) {
 
 	// 重建词表 + 向量
 	s.rebuildVectors()
+	logger.Infow("ingest file", "file", fileName, "chunks", count, "vocab", len(s.vocab))
 	return count, nil
 }
 
@@ -228,37 +256,21 @@ type AskReq struct {
 	TopK     *int    `json:"top_k"`
 }
 
-func writeJSON(w http.ResponseWriter, v interface{}) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeErr(w http.ResponseWriter, status int, msg string) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": msg})
-}
-
-func ingestHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
+func ingestHandler(c *gin.Context) {
 	var req IngestReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid json")
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "invalid json"})
 		return
 	}
 
 	chunks, err := store.IngestFile(req.FilePath)
 	if err != nil {
 		// 文件不存在/是目录/权限问题都是客户端给的 path 不对 → 400（与 Python/Rust/TS 一致）
-		writeErr(w, http.StatusBadRequest, err.Error())
+		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
 
-	writeJSON(w, map[string]interface{}{
+	c.JSON(200, gin.H{
 		"success":              true,
 		"file":                 req.FilePath,
 		"chunks":               chunks,
@@ -267,20 +279,15 @@ func ingestHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func askHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
+func askHandler(c *gin.Context) {
 	var req AskReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid json")
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "invalid json"})
 		return
 	}
 	// question 缺失/类型错 → 400；空串是合法输入（检索不到内容，返回兜底答案）
 	if req.Question == nil {
-		writeErr(w, http.StatusBadRequest, "缺少 question")
+		c.JSON(400, gin.H{"error": "缺少 question"})
 		return
 	}
 	topK := 3
@@ -288,14 +295,14 @@ func askHandler(w http.ResponseWriter, r *http.Request) {
 		topK = *req.TopK
 	}
 	if topK < 1 {
-		writeErr(w, http.StatusBadRequest, "top_k 必须 >= 1")
+		c.JSON(400, gin.H{"error": "top_k 必须 >= 1"})
 		return
 	}
 
 	sources := store.Search(*req.Question, topK)
 	answer := mockAnswer(*req.Question, sources)
 
-	writeJSON(w, map[string]interface{}{
+	c.JSON(200, gin.H{
 		"success":  true,
 		"question": *req.Question,
 		"answer":   answer,
@@ -304,14 +311,10 @@ func askHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func healthHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+func healthHandler(c *gin.Context) {
 	store.mu.RLock()
 	defer store.mu.RUnlock()
-	writeJSON(w, map[string]interface{}{
+	c.JSON(200, gin.H{
 		"service":       "simple-rag-go",
 		"chunks_loaded": len(store.chunks),
 		"vocab_size":    len(store.vocab),
@@ -324,13 +327,15 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 var _ = unicode.IsLetter
 
 func main() {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ingest", ingestHandler)
-	mux.HandleFunc("/ask", askHandler)
-	mux.HandleFunc("/health", healthHandler)
+	defer logger.Sync() // flush 日志
 
-	log.Printf("[Go] simple-rag server starting on %s", listenAddr)
-	if err := http.ListenAndServe(listenAddr, mux); err != nil {
-		log.Fatalf("server failed: %v", err)
+	r := gin.Default() // 自带 Recovery + Logger 中间件
+	r.POST("/ingest", ingestHandler)
+	r.POST("/ask", askHandler)
+	r.GET("/health", healthHandler)
+
+	logger.Infow("server starting", "addr", listenAddr)
+	if err := r.Run(listenAddr); err != nil {
+		logger.Fatalw("server failed", "error", err)
 	}
 }

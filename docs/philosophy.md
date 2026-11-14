@@ -145,7 +145,7 @@ Rust 是 5 门语言中唯一**没有 GC 但又保证内存安全**的语言，�
 ### Java 工程师的学习路径建议
 
 ```
-第 1 个月 → Go（语法简单，直接上手 net/http + goroutine）
+第 1 个月 → Go（语法简单，直接上手 gin + goroutine）
 第 2 个月 → 用 Go 重写一个 Java 小项目（如 API 网关）
 第 3 个月 → Python（FastAPI + Pydantic，写一个 AI 小 Demo）
 第 4 个月 → TS(Node)（如果有前端背景，否则先跳过）

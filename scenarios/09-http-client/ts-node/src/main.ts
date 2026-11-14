@@ -14,6 +14,7 @@
  * - 但 CPU 密集计算（重试中的 backoff 延迟）会阻塞事件循环
  */
 import Fastify from 'fastify';
+import pino from 'pino';
 // ⚠️ 必须起别名：路由处理器形参名叫 request（fastify 约定），
 // 直接 import { request } 会被形参遮蔽，调用时抛 "request2 is not a function"，
 // 于是每个 /call-external 都瞬间失败 —— 老代码全量请求 100% 报错，
@@ -22,6 +23,13 @@ import { request as undiciRequest, Agent, Pool, fetch as undiciFetch } from 'und
 
 const PORT = 8119;
 const MOCK_PORT = 8204;
+
+// pino 初始化：JSON 格式 + stdout + 最低 DEBUG 级别
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'debug',
+  timestamp: pino.stdTimeFunctions.isoTime,
+  transport: { target: 'pino/file', options: { destination: 1 } }
+});
 
 // ==================== 内置 Mock Server ====================
 
@@ -50,7 +58,7 @@ function startMockServer() {
   });
 
   server.listen(MOCK_PORT, () => {
-    console.log(`[TS-Node MockServer] starting on http://localhost:${MOCK_PORT}`);
+    logger.info({ msg: 'mock server starting', mockPort: MOCK_PORT });
   });
 }
 startMockServer();
@@ -126,7 +134,7 @@ function describeError(err: any): string {
   return err?.cause?.message || err?.message || String(err);
 }
 
-const fastify = Fastify({ logger: true });
+const fastify = Fastify({ logger });
 
 // undici Pool：连接池（每个主机）
 const pool = new Pool(`http://localhost:${MOCK_PORT}`, {
@@ -168,7 +176,7 @@ fastify.post<{ Body: CallBody }>('/call-external', async (request) => {
       await new Promise(r => setTimeout(r, backoffMs));
     }
 
-    console.log(`[HTTP-CLIENT] → GET ${url} (attempt ${attempt + 1})`);
+    logger.debug({ url, attempt: attempt + 1 }, 'GET request');
 
     try {
       // undici 自带的 headersTimeout/bodyTimeout 走"快定时器"（RESOLUTION_MS=1000，
@@ -251,9 +259,9 @@ fastify.get('/health', async () => ({
 const start = async () => {
   try {
     await fastify.listen({ port: PORT, host: '0.0.0.0' });
-    console.log(`[TS-Node] http-client server starting on ${PORT}`);
+    logger.info({ msg: 'server starting', addr: `0.0.0.0:${PORT}` });
   } catch (err) {
-    fastify.log.error(err);
+    logger.error({ err }, 'server failed to start');
     process.exit(1);
   }
 };

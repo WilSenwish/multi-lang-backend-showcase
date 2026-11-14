@@ -5,22 +5,50 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"runtime"
 	"sort"
 	"strconv"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"gonum.org/v1/gonum/stat"
 )
+
+// ==================== zap 结构化日志初始化 ====================
+
+// logger 全局 SugaredLogger（JSON 输出 + stdout + DEBUG 级别 + caller 信息）
+var logger *zap.SugaredLogger
+
+func init() {
+	cfg := zap.NewProductionConfig()
+	cfg.OutputPaths = []string{"stdout"}
+	cfg.ErrorOutputPaths = []string{"stderr"}
+	cfg.EncoderConfig.TimeKey = "time"
+	cfg.EncoderConfig.LevelKey = "level"
+	cfg.EncoderConfig.MessageKey = "msg"
+	cfg.EncoderConfig.CallerKey = "caller"
+	cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	cfg.EncoderConfig.EncodeLevel = zapcore.LowercaseLevelEncoder
+	cfg.EncoderConfig.EncodeCaller = zapcore.ShortCallerEncoder
+	cfg.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel) // 最低 DEBUG 级别
+	cfg.Sampling = nil                                    // 关闭采样，保证 bench 等场景日志完整
+
+	l, err := cfg.Build()
+	if err != nil {
+		panic(fmt.Sprintf("zap init failed: %v", err))
+	}
+	logger = l.Sugar()
+}
 
 const (
 	mult      = uint64(6364136223846793005)
 	inc       = uint64(1442695040888963407)
 	amountMod = uint64(100_000)
+	port      = 8141
 )
 
 func amountOf(i uint64) uint64 {
@@ -162,38 +190,35 @@ func analyze(req analyzeRequest) (analyzeResponse, string) {
 	}, ""
 }
 
-func writeJSON(w http.ResponseWriter, code int, v any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
 func main() {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"service": "data-analysis", "lang": "go", "engine": "gonum",
+	defer logger.Sync() // flush 日志
+
+	r := gin.Default() // 自带 Recovery + Logger 中间件
+	r.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"service":    "data-analysis",
+			"lang":       "go",
+			"engine":     "gonum",
 			"gomaxprocs": runtime.GOMAXPROCS(0),
 		})
 	})
-	mux.HandleFunc("/analyze", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "POST only"})
-			return
-		}
+	r.POST("/analyze", func(c *gin.Context) {
 		var req analyzeRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad json: " + err.Error()})
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "bad json: " + err.Error()})
 			return
 		}
 		resp, errMsg := analyze(req)
 		if errMsg != "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": errMsg})
+			c.JSON(http.StatusBadRequest, gin.H{"error": errMsg})
 			return
 		}
-		writeJSON(w, http.StatusOK, resp)
+		c.JSON(http.StatusOK, resp)
 	})
-	port := 8141
-	log.Printf("data-analysis (go/gonum) listening on :%d", port)
-	log.Fatal(http.ListenAndServe(":"+strconv.Itoa(port), mux))
+
+	addr := ":" + strconv.Itoa(port)
+	logger.Infow("server starting", "addr", addr, "engine", "gonum")
+	if err := r.Run(addr); err != nil {
+		logger.Fatalw("server failed", "error", err)
+	}
 }

@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "fastify": "^4.28.1",
+    "pino": "^9.6.0",
     "undici": "^6.19.4"
   },
   "devDependencies": {

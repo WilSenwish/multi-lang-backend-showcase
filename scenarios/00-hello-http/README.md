@@ -40,11 +40,11 @@ GET /hello
 
 | 语言 | 框架 / 运行时 | 端口 | 启动命令 |
 |------|-------------|------|---------|
-| Java | SpringBoot 2.1.3 + Jackson | 8080 | `mvn spring-boot:run` |
-| Go | 标准库 net/http | 8081 | `go run main.go` |
-| Python | FastAPI + Uvicorn | 8082 | `uvicorn main:app --port 8082` |
-| Rust | axum + tokio + serde | 8083 | `cargo run` |
-| TS(Node) | fastify + zod | 8084 | `npm run dev` |
+| Java | SpringBoot 2.1.3 + Jackson + logback-spring.xml | 8080 | `mvn spring-boot:run` |
+| Go | **gin-gonic/gin** + zap 结构化日志 | 8081 | `go run main.go` |
+| Python | FastAPI + Uvicorn + structlog | 8082 | `../../../.venv/bin/python main.py` |
+| Rust | axum + tokio + serde + tracing | 8083 | `cargo run` |
+| TS(Node) | fastify + zod + pino | 8084 | `npm run dev` |
 
 ---
 

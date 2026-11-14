@@ -12,16 +12,43 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"sort"
 	"sync/atomic"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"golang.org/x/sync/errgroup"
 )
+
+// ==================== zap 结构化日志初始化 ====================
+
+// logger 全局 SugaredLogger（JSON 输出 + stdout + DEBUG 级别 + caller 信息）
+var logger *zap.SugaredLogger
+
+func init() {
+	cfg := zap.NewProductionConfig()
+	cfg.OutputPaths = []string{"stdout"}
+	cfg.ErrorOutputPaths = []string{"stderr"}
+	cfg.EncoderConfig.TimeKey = "time"
+	cfg.EncoderConfig.LevelKey = "level"
+	cfg.EncoderConfig.MessageKey = "msg"
+	cfg.EncoderConfig.CallerKey = "caller"
+	cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	cfg.EncoderConfig.EncodeLevel = zapcore.LowercaseLevelEncoder
+	cfg.EncoderConfig.EncodeCaller = zapcore.ShortCallerEncoder
+	cfg.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel) // 最低 DEBUG 级别
+	cfg.Sampling = nil                                    // 关闭采样，保证 bench 等场景日志完整
+
+	l, err := cfg.Build()
+	if err != nil {
+		panic(fmt.Sprintf("zap init failed: %v", err))
+	}
+	logger = l.Sugar()
+}
 
 const PORT = 8146
 
@@ -35,11 +62,11 @@ var (
 )
 
 type fanoutRequest struct {
-	Tasks        *int `json:"tasks"`
-	TaskMs       *int `json:"task_ms"`
-	FailIndex    *int `json:"fail_index"`
-	FailAfterMs  *int `json:"fail_after_ms"`
-	TimeoutMs    *int `json:"timeout_ms"`
+	Tasks       *int `json:"tasks"`
+	TaskMs      *int `json:"task_ms"`
+	FailIndex   *int `json:"fail_index"`
+	FailAfterMs *int `json:"fail_after_ms"`
+	TimeoutMs   *int `json:"timeout_ms"`
 }
 
 type fanoutResponse struct {
@@ -73,12 +100,6 @@ func intOr(v *int, def int) int {
 	return *v
 }
 
-func writeJSON(w http.ResponseWriter, code int, v interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
 // sleepCancel 等 ms 毫秒；若 ctx 先被取消则返回 false（代表"被取消"）。
 // 这是取消传播能生效的关键：等待必须可被中断，不能是无条件 sleep。
 func sleepCancel(ctx context.Context, ms int) bool {
@@ -100,14 +121,10 @@ func sleepCancel(ctx context.Context, ms int) bool {
 	}
 }
 
-func handleFanout(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "POST required"})
-		return
-	}
+func handleFanout(c *gin.Context) {
 	var req fanoutRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json: " + err.Error()})
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json: " + err.Error()})
 		return
 	}
 
@@ -118,30 +135,30 @@ func handleFanout(w http.ResponseWriter, r *http.Request) {
 	timeoutMs := intOr(req.TimeoutMs, 0)
 
 	if tasks < 1 || tasks > 64 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "tasks must be in [1, 64]"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "tasks must be in [1, 64]"})
 		return
 	}
 	if taskMs < 1 || taskMs > 10000 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "task_ms must be in [1, 10000]"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "task_ms must be in [1, 10000]"})
 		return
 	}
 	if failIndex < -1 || failIndex >= tasks {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "fail_index must be in [-1, tasks)"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "fail_index must be in [-1, tasks)"})
 		return
 	}
 	if failAfterMs < 0 || failAfterMs > 10000 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "fail_after_ms must be in [0, 10000]"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "fail_after_ms must be in [0, 10000]"})
 		return
 	}
 	if timeoutMs < 0 || timeoutMs > 10000 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "timeout_ms must be in [0, 10000]"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "timeout_ms must be in [0, 10000]"})
 		return
 	}
 
 	t0 := time.Now()
 
 	// 父作用域：超时由 context 表达；errgroup 在首个子任务返回 error 时自动 cancel。
-	parent := r.Context()
+	parent := c.Request.Context()
 	if timeoutMs > 0 {
 		var cancel context.CancelFunc
 		parent, cancel = context.WithTimeout(parent, time.Duration(timeoutMs)*time.Millisecond)
@@ -207,7 +224,9 @@ func handleFanout(w http.ResponseWriter, r *http.Request) {
 		outcome = "timeout"
 	}
 
-	writeJSON(w, http.StatusOK, fanoutResponse{
+	logger.Debugw("fanout completed", "outcome", outcome, "elapsedMs", elapsed)
+
+	c.JSON(http.StatusOK, fanoutResponse{
 		Lang: "go", Tasks: tasks, TaskMs: taskMs, FailIndex: failIndex,
 		FailAfterMs: failAfterMs, TimeoutMs: timeoutMs,
 		Outcome: outcome, Completed: completed, Cancelled: cancelled, Failed: failed,
@@ -215,29 +234,36 @@ func handleFanout(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func handleStats(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, statsResponse{
-		Lang: "go", ActiveTasks: atomic.LoadInt64(&activeTasks),
-		Started: atomic.LoadInt64(&statStarted), Completed: atomic.LoadInt64(&statDone),
-		Cancelled: atomic.LoadInt64(&statCancel), Failed: atomic.LoadInt64(&statFailed),
+func handleStats(c *gin.Context) {
+	c.JSON(http.StatusOK, statsResponse{
+		Lang:        "go",
+		ActiveTasks: atomic.LoadInt64(&activeTasks),
+		Started:     atomic.LoadInt64(&statStarted),
+		Completed:   atomic.LoadInt64(&statDone),
+		Cancelled:   atomic.LoadInt64(&statCancel),
+		Failed:      atomic.LoadInt64(&statFailed),
 	})
 }
 
-func handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{
-		"service": "structured-concurrency", "lang": "go", "engine": "errgroup+context",
+func handleHealth(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"service": "structured-concurrency",
+		"lang":    "go",
+		"engine":  "errgroup+context",
 	})
 }
 
 func main() {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/health", handleHealth)
-	mux.HandleFunc("POST /fanout", handleFanout)
-	mux.HandleFunc("GET /stats", handleStats)
+	defer logger.Sync() // flush 日志
+
+	r := gin.Default() // 自带 Recovery + Logger 中间件
+	r.GET("/health", handleHealth)
+	r.POST("/fanout", handleFanout)
+	r.GET("/stats", handleStats)
 
 	addr := fmt.Sprintf("0.0.0.0:%d", PORT)
-	log.Printf("structured-concurrency (go/errgroup) listening on %s", addr)
-	if err := http.ListenAndServe(addr, mux); err != nil {
-		log.Fatal(err)
+	logger.Infow("server starting", "addr", addr, "engine", "errgroup+context")
+	if err := r.Run(addr); err != nil {
+		logger.Fatalw("server failed", "error", err)
 	}
 }

@@ -3,10 +3,39 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"log"
-	"net/http"
+	"fmt"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
+
+// ==================== zap 结构化日志初始化 ====================
+
+// logger 全局 SugaredLogger（JSON 输出 + stdout + DEBUG 级别 + caller 信息）
+var logger *zap.SugaredLogger
+
+func init() {
+	cfg := zap.NewProductionConfig()
+	cfg.OutputPaths = []string{"stdout"}
+	cfg.ErrorOutputPaths = []string{"stderr"}
+	cfg.EncoderConfig.TimeKey = "time"
+	cfg.EncoderConfig.LevelKey = "level"
+	cfg.EncoderConfig.MessageKey = "msg"
+	cfg.EncoderConfig.CallerKey = "caller"
+	cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	cfg.EncoderConfig.EncodeLevel = zapcore.LowercaseLevelEncoder
+	cfg.EncoderConfig.EncodeCaller = zapcore.ShortCallerEncoder
+	cfg.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel) // 最低 DEBUG 级别
+	cfg.Sampling = nil                                    // 关闭采样，保证 bench 等场景日志完整
+
+	l, err := cfg.Build()
+	if err != nil {
+		panic(fmt.Sprintf("zap init failed: %v", err))
+	}
+	logger = l.Sugar()
+}
 
 // 统一接口（和 Java / Python / Rust / TS-Node 相同的 5 个端点）：
 // GET  /demo          → 返回标准测试 JSON
@@ -57,12 +86,8 @@ func demoUser() User {
 // ==================== 5 个 Handler ====================
 
 // GET /demo
-func demoHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	writeJSON(w, demoUser())
+func demoHandler(c *gin.Context) {
+	c.JSON(200, demoUser())
 }
 
 // encodeJSON 按契约序列化：紧凑分隔符 + 不转义 HTML 字符。
@@ -83,22 +108,17 @@ func encodeJSON(v interface{}, indent string) ([]byte, error) {
 }
 
 // POST /serialize
-func serializeHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
+func serializeHandler(c *gin.Context) {
 	var body map[string]interface{}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": "invalid json: " + err.Error()})
 		return
 	}
 
 	start := time.Now()
 	data, err := encodeJSON(body, "")
 	if err != nil {
-		http.Error(w, "marshal error: "+err.Error(), http.StatusInternalServerError)
+		c.JSON(500, gin.H{"error": "marshal error: " + err.Error()})
 		return
 	}
 	elapsedUs := time.Since(start).Microseconds()
@@ -111,32 +131,27 @@ func serializeHandler(w http.ResponseWriter, r *http.Request) {
 		"time_us":   elapsedUs,
 		"pretty":    string(pretty),
 	}
-	writeJSON(w, resp)
+	c.JSON(200, resp)
 }
 
 // POST /deserialize
-func deserializeHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
+func deserializeHandler(c *gin.Context) {
 	var body map[string]string
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": "invalid json: " + err.Error()})
 		return
 	}
 
 	jsonStr, ok := body["json_string"]
 	if !ok {
-		http.Error(w, "missing json_string field", http.StatusBadRequest)
+		c.JSON(400, gin.H{"error": "missing json_string field"})
 		return
 	}
 
 	start := time.Now()
 	var parsed interface{}
 	if err := json.Unmarshal([]byte(jsonStr), &parsed); err != nil {
-		http.Error(w, "unmarshal error: "+err.Error(), http.StatusBadRequest)
+		c.JSON(400, gin.H{"error": "unmarshal error: " + err.Error()})
 		return
 	}
 	elapsedUs := time.Since(start).Microseconds()
@@ -146,37 +161,32 @@ func deserializeHandler(w http.ResponseWriter, r *http.Request) {
 		"time_us":  elapsedUs,
 		"size":     len(jsonStr),
 	}
-	writeJSON(w, resp)
+	c.JSON(200, resp)
 }
 
 // POST /roundtrip
-func roundtripHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
+func roundtripHandler(c *gin.Context) {
 	var body map[string]interface{}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": "invalid json: " + err.Error()})
 		return
 	}
 
 	json1, err := encodeJSON(body, "")
 	if err != nil {
-		http.Error(w, "marshal error: "+err.Error(), http.StatusInternalServerError)
+		c.JSON(500, gin.H{"error": "marshal error: " + err.Error()})
 		return
 	}
 
 	var parsed interface{}
 	if err := json.Unmarshal(json1, &parsed); err != nil {
-		http.Error(w, "unmarshal error: "+err.Error(), http.StatusInternalServerError)
+		c.JSON(500, gin.H{"error": "unmarshal error: " + err.Error()})
 		return
 	}
 
 	json2, err := encodeJSON(parsed, "")
 	if err != nil {
-		http.Error(w, "marshal error: "+err.Error(), http.StatusInternalServerError)
+		c.JSON(500, gin.H{"error": "marshal error: " + err.Error()})
 		return
 	}
 
@@ -187,16 +197,11 @@ func roundtripHandler(w http.ResponseWriter, r *http.Request) {
 		"original_bytes":  len(json1),
 		"roundtrip_bytes": len(json2),
 	}
-	writeJSON(w, resp)
+	c.JSON(200, resp)
 }
 
 // GET /bench
-func benchHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
+func benchHandler(c *gin.Context) {
 	user := demoUser()
 	iterations := 10000
 
@@ -217,31 +222,27 @@ func benchHandler(w http.ResponseWriter, r *http.Request) {
 	totalMs := time.Since(start).Milliseconds()
 
 	resp := map[string]interface{}{
-		"language":       "go-encoding/json",
-		"iterations":     iterations,
-		"total_time_ms":  totalMs,
-		"avg_time_us":    float64(totalMs*1000) / float64(iterations),
+		"language":        "go-encoding/json",
+		"iterations":      iterations,
+		"total_time_ms":   totalMs,
+		"avg_time_us":     float64(totalMs*1000) / float64(iterations),
 		"json_size_bytes": len(lastJSON),
 	}
-	writeJSON(w, resp)
-}
-
-func writeJSON(w http.ResponseWriter, v interface{}) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(v)
+	c.JSON(200, resp)
 }
 
 func main() {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/demo", demoHandler)
-	mux.HandleFunc("/serialize", serializeHandler)
-	mux.HandleFunc("/deserialize", deserializeHandler)
-	mux.HandleFunc("/roundtrip", roundtripHandler)
-	mux.HandleFunc("/bench", benchHandler)
+	defer logger.Sync() // flush 日志
 
-	log.Printf("[Go] json-serialize server starting on %s", listenAddr)
-	if err := http.ListenAndServe(listenAddr, mux); err != nil {
-		log.Fatalf("server failed: %v", err)
+	r := gin.Default() // 自带 Recovery + Logger 中间件
+	r.GET("/demo", demoHandler)
+	r.POST("/serialize", serializeHandler)
+	r.POST("/deserialize", deserializeHandler)
+	r.POST("/roundtrip", roundtripHandler)
+	r.GET("/bench", benchHandler)
+
+	logger.Infow("server starting", "addr", listenAddr)
+	if err := r.Run(listenAddr); err != nil {
+		logger.Fatalw("server failed", "error", err)
 	}
 }

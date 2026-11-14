@@ -19,6 +19,35 @@ from typing import List, Optional
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
+# ==================== structlog 结构化日志初始化 ====================
+import logging
+import sys
+
+import structlog
+
+
+def _configure_structlog() -> None:
+    """配置 structlog：JSON 格式输出到 stdout，最低 DEBUG 级别"""
+    structlog.configure(
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.processors.StackInfoRenderer(),
+            structlog.dev.set_exc_info,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.ExceptionPrettyPrinter(),
+            structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(logging.DEBUG),
+        context_class=dict,
+        logger_factory=structlog.PrintLoggerFactory(file=sys.stdout),
+        cache_logger_on_first_use=True,
+    )
+
+
+_configure_structlog()
+logger = structlog.get_logger()
+
 app = FastAPI(title="structured-concurrency (python)")
 
 # ---- 运行时统计（供 /stats 暴露，验证器用它做"取消是否真的生效"的延迟判定）----
@@ -148,3 +177,11 @@ async def fanout(req: FanoutRequest):
         outcome=outcome, completed=completed, cancelled=cancelled, failed=failed,
         elapsed_ms=elapsed_ms, leaked=STATS["active"],
     )
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    PORT = 8147
+    logger.info("service starting", port=PORT, title="structured-concurrency")
+    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="debug")

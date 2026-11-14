@@ -10,6 +10,7 @@
  */
 
 import Fastify from "fastify";
+import pino from "pino";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const dfd = require("danfojs-node");
@@ -19,6 +20,13 @@ const INC = 1442695040888963407n;
 const MASK = (1n << 64n) - 1n;
 const AMOUNT_MOD = 100_000n;
 const PORT = 8144;
+
+// pino 初始化：JSON 格式 + stdout + 最低 DEBUG 级别
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'debug',
+  timestamp: pino.stdTimeFunctions.isoTime,
+  transport: { target: 'pino/file', options: { destination: 1 } }
+});
 
 function amountOf(i: number): number {
   const h = ((BigInt(i) + 1n) * MULT + INC) & MASK; // BigInt 模拟 uint64 环绕
@@ -134,7 +142,7 @@ function analyze(rows: number, cats: number): AnalyzeResponse {
 }
 
 async function main() {
-  const app = Fastify({ logger: false });
+  const app = Fastify({ logger });
 
   app.get<{ Reply: Record<string, string> }>("/health", async () => ({
     service: "data-analysis",
@@ -158,10 +166,10 @@ async function main() {
   );
 
   await app.listen({ port: PORT, host: "0.0.0.0" });
-  console.log(`data-analysis (ts-node/danfojs) listening on :${PORT}`);
+  logger.info({ msg: 'server starting', addr: `0.0.0.0:${PORT}` });
 }
 
 main().catch((err) => {
-  console.error(err);
+  logger.error({ err }, 'main failed');
   process.exit(1);
 });

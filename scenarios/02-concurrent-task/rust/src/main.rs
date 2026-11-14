@@ -149,12 +149,20 @@ async fn run(State(_): State<AppState>, body: Bytes) -> Response {
 
 #[tokio::main]
 async fn main() {
+    // 初始化 tracing 日志：JSON 格式 + 最低 DEBUG 级别 + stdout
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| "debug".into()))
+        .with_target(false)
+        .json()
+        .init();
+
     let app = Router::new()
         .route("/run", post(run))
         .with_state(AppState);
 
     let addr = "0.0.0.0:8088";
-    println!("[Rust] concurrent-task server starting on {}", addr);
+    tracing::info!(addr = %addr, "server starting");
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await

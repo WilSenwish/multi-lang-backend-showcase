@@ -15,6 +15,35 @@ import pandas as pd
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
+# ==================== structlog 结构化日志初始化 ====================
+import logging
+import sys
+
+import structlog
+
+
+def _configure_structlog() -> None:
+    """配置 structlog：JSON 格式输出到 stdout，最低 DEBUG 级别"""
+    structlog.configure(
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.processors.StackInfoRenderer(),
+            structlog.dev.set_exc_info,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.ExceptionPrettyPrinter(),
+            structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(logging.DEBUG),
+        context_class=dict,
+        logger_factory=structlog.PrintLoggerFactory(file=sys.stdout),
+        cache_logger_on_first_use=True,
+    )
+
+
+_configure_structlog()
+logger = structlog.get_logger()
+
 app = FastAPI(title="data-analysis")
 
 MULT = 6364136223846793005
@@ -117,3 +146,11 @@ def analyze(req: AnalyzeRequest) -> AnalyzeResponse:
         agg_ms=round((t2 - t1) * 1000),
         elapsed_ms=round((t2 - t0) * 1000),
     )
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    PORT = 8142
+    logger.info("service starting", port=PORT, title="data-analysis")
+    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="debug")

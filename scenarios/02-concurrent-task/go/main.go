@@ -12,13 +12,41 @@
 package main
 
 import (
-	"encoding/json"
-	"log"
+	"fmt"
 	"math"
-	"net/http"
 	"sync"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
+
+// ==================== zap 结构化日志初始化 ====================
+
+// logger 全局 SugaredLogger（JSON 输出 + stdout + DEBUG 级别 + caller 信息）
+var logger *zap.SugaredLogger
+
+func init() {
+	cfg := zap.NewProductionConfig()
+	cfg.OutputPaths = []string{"stdout"}
+	cfg.ErrorOutputPaths = []string{"stderr"}
+	cfg.EncoderConfig.TimeKey = "time"
+	cfg.EncoderConfig.LevelKey = "level"
+	cfg.EncoderConfig.MessageKey = "msg"
+	cfg.EncoderConfig.CallerKey = "caller"
+	cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	cfg.EncoderConfig.EncodeLevel = zapcore.LowercaseLevelEncoder
+	cfg.EncoderConfig.EncodeCaller = zapcore.ShortCallerEncoder
+	cfg.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel) // 最低 DEBUG 级别
+	cfg.Sampling = nil                                    // 关闭采样，保证 bench 等场景日志完整
+
+	l, err := cfg.Build()
+	if err != nil {
+		panic(fmt.Sprintf("zap init failed: %v", err))
+	}
+	logger = l.Sugar()
+}
 
 // RunRequest 请求体
 // 用指针类型区分"字段缺省"与"显式传 0"：缺省走默认值 100/100/10，
@@ -56,17 +84,11 @@ type RunResponse struct {
 
 const listenAddr = ":8086"
 
-func runHandler(w http.ResponseWriter, r *http.Request) {
-	// 只接受 POST
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
+func runHandler(c *gin.Context) {
 	// 解析请求
 	var req RunRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "invalid json: " + err.Error()})
 		return
 	}
 
@@ -77,21 +99,23 @@ func runHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 统一契约：显式传入的非法值一律 400，不再静默夹取
 	if taskCount < 1 {
-		http.Error(w, "task_count must be >= 1", http.StatusBadRequest)
+		c.JSON(400, gin.H{"error": "task_count must be >= 1"})
 		return
 	}
 	if delayMs < 0 {
-		http.Error(w, "task_delay_ms must be >= 0", http.StatusBadRequest)
+		c.JSON(400, gin.H{"error": "task_delay_ms must be >= 0"})
 		return
 	}
 	if concurrency < 1 {
-		http.Error(w, "concurrency must be >= 1", http.StatusBadRequest)
+		c.JSON(400, gin.H{"error": "concurrency must be >= 1"})
 		return
 	}
 	// 并发数不超过任务数（契约行为）
 	if concurrency > taskCount {
 		concurrency = taskCount
 	}
+
+	logger.Debugw("run handler start", "taskCount", taskCount, "delayMs", delayMs, "concurrency", concurrency)
 
 	start := time.Now()
 
@@ -143,19 +167,17 @@ func runHandler(w http.ResponseWriter, r *http.Request) {
 		Results:     results,
 	}
 
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		log.Printf("encode response error: %v", err)
-	}
+	c.JSON(200, resp)
 }
 
 func main() {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/run", runHandler)
+	defer logger.Sync() // flush 日志
 
-	log.Printf("[Go] concurrent-task server starting on %s", listenAddr)
-	if err := http.ListenAndServe(listenAddr, mux); err != nil {
-		log.Fatalf("server failed: %v", err)
+	r := gin.Default() // 自带 Recovery + Logger 中间件
+	r.POST("/run", runHandler)
+
+	logger.Infow("server starting", "addr", listenAddr)
+	if err := r.Run(listenAddr); err != nil {
+		logger.Fatalw("server failed", "error", err)
 	}
 }

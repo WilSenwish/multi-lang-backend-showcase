@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "fastify": "^4.28.1",
+    "pino": "^9.6.0",
     "better-sqlite3": "^11.3.0"
   },
   "devDependencies": {

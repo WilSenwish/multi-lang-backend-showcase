@@ -14,15 +14,43 @@
 package main
 
 import (
-	"encoding/json"
-	"log"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"gorm.io/gorm"
 )
+
+// ==================== zap 结构化日志初始化 ====================
+
+// logger 全局 SugaredLogger（JSON 输出 + stdout + DEBUG 级别 + caller 信息）
+var logger *zap.SugaredLogger
+
+func init() {
+	cfg := zap.NewProductionConfig()
+	cfg.OutputPaths = []string{"stdout"}
+	cfg.ErrorOutputPaths = []string{"stderr"}
+	cfg.EncoderConfig.TimeKey = "time"
+	cfg.EncoderConfig.LevelKey = "level"
+	cfg.EncoderConfig.MessageKey = "msg"
+	cfg.EncoderConfig.CallerKey = "caller"
+	cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	cfg.EncoderConfig.EncodeLevel = zapcore.LowercaseLevelEncoder
+	cfg.EncoderConfig.EncodeCaller = zapcore.ShortCallerEncoder
+	cfg.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel) // 最低 DEBUG 级别
+	cfg.Sampling = nil                                    // 关闭采样，保证 bench 等场景日志完整
+
+	l, err := cfg.Build()
+	if err != nil {
+		panic(fmt.Sprintf("zap init failed: %v", err))
+	}
+	logger = l.Sugar()
+}
 
 const listenAddr = ":8126"
 
@@ -47,12 +75,12 @@ func initDB() {
 	var err error
 	db, err = gorm.Open(sqlite.Open("demo.db"), &gorm.Config{})
 	if err != nil {
-		log.Fatalf("DB 连接失败: %v", err)
+		logger.Fatalw("DB 连接失败", "error", err)
 	}
 
 	// 自动迁移（CodeFirst，自动建表）
 	if err := db.AutoMigrate(&User{}); err != nil {
-		log.Fatalf("AutoMigrate 失败: %v", err)
+		logger.Fatalw("AutoMigrate 失败", "error", err)
 	}
 
 	// 配置连接池（database/sql 内置）
@@ -61,7 +89,7 @@ func initDB() {
 	sqlDB.SetMaxIdleConns(2)   // 最大空闲连接数
 	sqlDB.SetConnMaxLifetime(5 * time.Minute)
 
-	log.Printf("[Go] DB 初始化成功（SQLite 文件: demo.db）")
+	logger.Infow("DB 初始化成功", "db", "SQLite", "file", "demo.db")
 }
 
 // ==================== API ====================
@@ -72,70 +100,29 @@ type UserInput struct {
 	Age   *int    `json:"age"`
 }
 
-func writeJSON(w http.ResponseWriter, code int, v interface{}) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(v)
-}
-
-func usersHandler(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodPost:
-		createUser(w, r)
-	case http.MethodGet:
-		listUsers(w, r)
-	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
-func userHandler(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseUint(r.PathValue("id"), 10, 64)
-	if err != nil {
-		writeJSON(w, 400, map[string]string{"error": "invalid id"})
-		return
-	}
-
-	switch r.Method {
-	case http.MethodGet:
-		getUser(w, uint(id))
-	case http.MethodPut:
-		updateUser(w, r, uint(id))
-	case http.MethodDelete:
-		deleteUser(w, uint(id))
-	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
-func createUser(w http.ResponseWriter, r *http.Request) {
+func createUser(c *gin.Context) {
 	var input struct {
 		Name  string `json:"name"`
 		Email string `json:"email"`
 		Age   int    `json:"age"`
 	}
-	json.NewDecoder(r.Body).Decode(&input)
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(400, gin.H{"error": "invalid json: " + err.Error()})
+		return
+	}
 
 	user := User{Name: input.Name, Email: input.Email, Age: input.Age}
 	if err := db.Create(&user).Error; err != nil {
-		writeJSON(w, 400, map[string]string{"error": err.Error()})
+		logger.Errorw("create user failed", "error", err)
+		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
-	writeJSON(w, 201, user)
+	c.JSON(201, user)
 }
 
-func getUser(w http.ResponseWriter, id uint) {
-	var user User
-	if err := db.First(&user, id).Error; err != nil {
-		writeJSON(w, 404, map[string]string{"error": "not found"})
-		return
-	}
-	writeJSON(w, 200, user)
-}
-
-func listUsers(w http.ResponseWriter, r *http.Request) {
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	size, _ := strconv.Atoi(r.URL.Query().Get("size"))
+func listUsers(c *gin.Context) {
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "0"))
+	size, _ := strconv.Atoi(c.DefaultQuery("size", "10"))
 	if page < 0 {
 		page = 0
 	}
@@ -149,7 +136,7 @@ func listUsers(w http.ResponseWriter, r *http.Request) {
 	db.Model(&User{}).Count(&total)
 	db.Order("id ASC").Offset(page * size).Limit(size).Find(&items)
 
-	writeJSON(w, 200, map[string]interface{}{
+	c.JSON(200, gin.H{
 		"items": items,
 		"total": total,
 		"page":  page,
@@ -157,13 +144,39 @@ func listUsers(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func updateUser(w http.ResponseWriter, r *http.Request, id uint) {
-	var input UserInput
-	json.NewDecoder(r.Body).Decode(&input)
+func getUser(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseUint(idStr, 10, 64)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid id"})
+		return
+	}
 
 	var user User
 	if err := db.First(&user, id).Error; err != nil {
-		writeJSON(w, 404, map[string]string{"error": "not found"})
+		c.JSON(404, gin.H{"error": "not found"})
+		return
+	}
+	c.JSON(200, user)
+}
+
+func updateUser(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseUint(idStr, 10, 64)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid id"})
+		return
+	}
+
+	var input UserInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(400, gin.H{"error": "invalid json: " + err.Error()})
+		return
+	}
+
+	var user User
+	if err := db.First(&user, id).Error; err != nil {
+		c.JSON(404, gin.H{"error": "not found"})
 		return
 	}
 
@@ -178,32 +191,44 @@ func updateUser(w http.ResponseWriter, r *http.Request, id uint) {
 	}
 
 	db.Save(&user)
-	writeJSON(w, 200, user)
+	c.JSON(200, user)
 }
 
-func deleteUser(w http.ResponseWriter, id uint) {
-	result := db.Delete(&User{}, id)
-	if result.Error != nil || result.RowsAffected == 0 {
-		writeJSON(w, 404, map[string]string{"error": "not found"})
+func deleteUser(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseUint(idStr, 10, 64)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid id"})
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+
+	result := db.Delete(&User{}, id)
+	if result.Error != nil || result.RowsAffected == 0 {
+		c.JSON(404, gin.H{"error": "not found"})
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 // ==================== main ====================
 
 func main() {
+	defer logger.Sync() // flush 日志
+
 	initDB()
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/users", usersHandler)
-	mux.HandleFunc("/users/{id}", userHandler)
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, map[string]string{"service": "db-crud-pool-go", "db": "sqlite"})
+	r := gin.Default() // 自带 Recovery + Logger 中间件
+	r.POST("/users", createUser)
+	r.GET("/users", listUsers)
+	r.GET("/users/:id", getUser)
+	r.PUT("/users/:id", updateUser)
+	r.DELETE("/users/:id", deleteUser)
+	r.GET("/health", func(c *gin.Context) {
+		c.JSON(200, gin.H{"service": "db-crud-pool-go", "db": "sqlite"})
 	})
 
-	log.Printf("[Go] db-crud-pool server starting on %s", listenAddr)
-	if err := http.ListenAndServe(listenAddr, mux); err != nil {
-		log.Fatalf("server failed: %v", err)
+	logger.Infow("server starting", "addr", listenAddr)
+	if err := r.Run(listenAddr); err != nil {
+		logger.Fatalw("server failed", "error", err)
 	}
 }

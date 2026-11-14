@@ -19,9 +19,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -29,7 +27,37 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
+
+// ==================== zap 结构化日志初始化 ====================
+
+// logger 全局 SugaredLogger（JSON 输出 + stdout + DEBUG 级别 + caller 信息）
+var logger *zap.SugaredLogger
+
+func init() {
+	cfg := zap.NewProductionConfig()
+	cfg.OutputPaths = []string{"stdout"}
+	cfg.ErrorOutputPaths = []string{"stderr"}
+	cfg.EncoderConfig.TimeKey = "time"
+	cfg.EncoderConfig.LevelKey = "level"
+	cfg.EncoderConfig.MessageKey = "msg"
+	cfg.EncoderConfig.CallerKey = "caller"
+	cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	cfg.EncoderConfig.EncodeLevel = zapcore.LowercaseLevelEncoder
+	cfg.EncoderConfig.EncodeCaller = zapcore.ShortCallerEncoder
+	cfg.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel) // 最低 DEBUG 级别
+	cfg.Sampling = nil                                    // 关闭采样，保证 bench 等场景日志完整
+
+	l, err := cfg.Build()
+	if err != nil {
+		panic(fmt.Sprintf("zap init failed: %v", err))
+	}
+	logger = l.Sugar()
+}
 
 const listenAddr = ":8131"
 
@@ -43,57 +71,56 @@ var (
 
 // ==================== Handler ====================
 
-func longTaskHandler(w http.ResponseWriter, r *http.Request) {
+func longTaskHandler(c *gin.Context) {
 	id := inFlightCount.Add(1)
-	log.Printf("[REQUEST] 开始处理 long-task, id=%d, in-flight=%d", id, inFlightCount.Load())
+	logger.Infow("开始处理 long-task", "id", id, "in-flight", inFlightCount.Load())
 
 	defer func() {
 		inFlightCount.Add(-1)
-		log.Printf("[REQUEST] 完成 long-task, id=%d", id)
+		logger.Infow("完成 long-task", "id", id)
 	}()
 
 	// 模拟 3s 耗时
 	time.Sleep(3 * time.Second)
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	c.JSON(http.StatusOK, gin.H{
 		"ok":            true,
 		"duration_ms":   3000,
 		"shutting_down": shuttingDown.Load(),
 	})
 }
 
-func healthHandler(w http.ResponseWriter, r *http.Request) {
-	body := map[string]interface{}{
+func healthHandler(c *gin.Context) {
+	body := gin.H{
 		"service":      "graceful-shutdown-go",
 		"shutting_down": shuttingDown.Load(),
 		"in_flight":    inFlightCount.Load(),
 	}
 
-	w.Header().Set("Content-Type", "application/json")
 	if shuttingDown.Load() {
-		w.WriteHeader(http.StatusServiceUnavailable)
+		c.JSON(http.StatusServiceUnavailable, body)
 	} else {
-		w.WriteHeader(http.StatusOK)
+		c.JSON(http.StatusOK, body)
 	}
-	json.NewEncoder(w).Encode(body)
 }
 
 // ==================== main ====================
 
 func main() {
+	defer logger.Sync() // flush 日志
+
 	fmt.Println("========================================")
 	fmt.Println("场景 12：优雅关闭 — Go 实现（最优雅！）")
 	fmt.Println("信号：kill -TERM <pid> 或 Ctrl+C")
 	fmt.Println("========================================")
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/long-task", longTaskHandler)
-	mux.HandleFunc("/api/health", healthHandler)
+	r := gin.Default() // 自带 Recovery + Logger 中间件
+	r.GET("/api/long-task", longTaskHandler)
+	r.GET("/api/health", healthHandler)
 
 	server := &http.Server{
 		Addr:    listenAddr,
-		Handler: mux,
+		Handler: r,
 	}
 
 	// ============ 优雅关闭的核心代码 ============
@@ -103,34 +130,36 @@ func main() {
 
 	// 2. 启动 HTTP 服务（在 goroutine 里）
 	go func() {
-		log.Printf("[Go] server starting on %s", listenAddr)
+		logger.Infow("server starting", "addr", listenAddr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("server error: %v", err)
+			logger.Fatalw("server error", "error", err)
 		}
 	}()
 
 	// 3. 等待信号
 	<-ctx.Done()
-	log.Println("========================================")
-	log.Println("[GRACEFUL SHUTDOWN] received signal:", ctx.Err())
-	log.Println("[GRACEFUL SHUTDOWN] Step 1/4: 标记 shutting_down=true")
+	logger.Infow("========================================")
+	logger.Infow("[GRACEFUL SHUTDOWN] received signal", "signal", ctx.Err())
+	logger.Infow("[GRACEFUL SHUTDOWN] Step 1/4: 标记 shutting_down=true")
 	shuttingDown.Store(true)
 
-	log.Println("[GRACEFUL SHUTDOWN] Step 2/4: 停止接收新请求")
+	logger.Infow("[GRACEFUL SHUTDOWN] Step 2/4: 停止接收新请求")
 	// Shutdown 会自动关闭监听器
 
-	log.Println("[GRACEFUL SHUTDOWN] Step 3/4: 等待 in-flight 请求完成 (timeout=10s)")
+	logger.Infow("[GRACEFUL SHUTDOWN] Step 3/4: 等待 in-flight 请求完成 (timeout=10s)")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Printf("[GRACEFUL SHUTDOWN] ⚠️ Shutdown 超时！强制关闭: %v", err)
+		logger.Warnw("[GRACEFUL SHUTDOWN] Shutdown 超时！强制关闭", "error", err)
 		server.Close() // 强制关闭
 	} else {
-		log.Println("[GRACEFUL SHUTDOWN] ✅ Shutdown 成功，所有请求完成")
+		logger.Infow("[GRACEFUL SHUTDOWN] Shutdown 成功，所有请求完成")
 	}
 
-	log.Println("[GRACEFUL SHUTDOWN] Step 4/4: 释放资源 (defer Close() 自动清理)")
-	log.Println("[GRACEFUL SHUTDOWN] ✅ Shutdown complete")
-	log.Println("========================================")
+	logger.Infow("[GRACEFUL SHUTDOWN] Step 4/4: 释放资源 (defer Close() 自动清理)")
+	logger.Infow("[GRACEFUL SHUTDOWN] ✅ Shutdown complete")
+	logger.Infow("========================================")
+
+	_ = shutdownDone // 防未使用
 }

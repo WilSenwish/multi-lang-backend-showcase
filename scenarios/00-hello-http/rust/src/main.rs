@@ -33,10 +33,18 @@ async fn hello(Query(query): Query<HelloQuery>) -> Json<HelloResponse> {
 
 #[tokio::main]
 async fn main() {
+    // 初始化 tracing 日志：JSON 格式 + 最低 DEBUG 级别 + stdout
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| "debug".into()))
+        .with_target(false)
+        .json()
+        .init();
+
     let app = Router::new().route("/hello", get(hello));
 
     let addr: SocketAddr = LISTEN_ADDR.parse().expect("invalid address");
-    println!("[Rust] hello-http server starting on {}", addr);
+    tracing::info!(addr = %addr, "server starting");
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await

@@ -13,9 +13,17 @@
  * - 坑：process.exit() 会立即杀死进程，超时保护必须有
  */
 import Fastify from 'fastify';
+import pino from 'pino';
 
 const PORT = 8134;
 const SHUTDOWN_TIMEOUT_MS = 10_000;
+
+// pino 初始化：JSON 格式 + stdout + 最低 DEBUG 级别
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'debug',
+  timestamp: pino.stdTimeFunctions.isoTime,
+  transport: { target: 'pino/file', options: { destination: 1 } }
+});
 
 // ==================== 全局状态 ====================
 
@@ -25,7 +33,7 @@ let shuttingDown = false;
 // ==================== Fastify 服务 ====================
 
 const fastify = Fastify({
-  logger: true,
+  logger,
   // 注意：这里必须是 'idle'，不能写 true。
   // true 会在 close() 时**立即掐断所有连接**（含正在处理的请求），
   // 于是"等 in-flight 请求完成"直接失效 —— 客户端会收到 connection reset。
@@ -69,14 +77,11 @@ fastify.get('/api/health', async (_req, reply) => {
 
 const start = async () => {
   try {
-    console.log('========================================');
-    console.log('场景 12：优雅关闭 — Node 实现（Fastify）');
-    console.log(`信号：kill -TERM <pid> 或 Ctrl+C（超时 ${SHUTDOWN_TIMEOUT_MS}ms）`);
-    console.log('========================================');
+    logger.info({ msg: 'graceful shutdown scene', timeoutMs: SHUTDOWN_TIMEOUT_MS });
 
     await fastify.listen({ port: PORT, host: '0.0.0.0' });
   } catch (err) {
-    fastify.log.error(err);
+    logger.error({ err }, 'server failed to start');
     process.exit(1);
   }
 };
@@ -86,18 +91,16 @@ start();
 // ==================== 优雅关闭信号处理 ====================
 
 async function gracefulShutdown(signal: string) {
-  console.log('========================================');
-  console.log(`[GRACEFUL SHUTDOWN] 收到信号: ${signal}`);
-  console.log('[GRACEFUL SHUTDOWN] Step 1/4: 标记 shutting_down=true');
+  logger.info({ msg: 'graceful shutdown: signal received', signal });
+  logger.info({ msg: 'graceful shutdown: Step 1/4: mark shutting_down=true' });
   shuttingDown = true;
 
-  console.log('[GRACEFUL SHUTDOWN] Step 2/4: 停止接收新请求');
-
-  console.log(`[GRACEFUL SHUTDOWN] Step 3/4: 等待 in-flight 请求完成 (timeout=${SHUTDOWN_TIMEOUT_MS}ms)`);
+  logger.info({ msg: 'graceful shutdown: Step 2/4: stop accepting new requests' });
+  logger.info({ msg: 'graceful shutdown: Step 3/4: waiting for in-flight requests', timeoutMs: SHUTDOWN_TIMEOUT_MS });
 
   // 超时强制关闭
   const forceExitTimer = setTimeout(() => {
-    console.log('[GRACEFUL SHUTDOWN] ⚠️ 超时！强制退出');
+    logger.warn({ msg: 'graceful shutdown: timeout, forcing exit' });
     process.exit(1);
   }, SHUTDOWN_TIMEOUT_MS);
 
@@ -106,15 +109,14 @@ async function gracefulShutdown(signal: string) {
     await fastify.close();
 
     clearTimeout(forceExitTimer);
-    console.log('[GRACEFUL SHUTDOWN] ✅ 所有请求完成');
+    logger.info({ msg: 'graceful shutdown: all requests completed' });
   } catch (err) {
-    fastify.log.error({ msg: '[GRACEFUL SHUTDOWN] close error', err });
+    logger.error({ err }, 'graceful shutdown: close error');
     process.exit(1);
   }
 
-  console.log('[GRACEFUL SHUTDOWN] Step 4/4: 释放资源');
-  console.log('[GRACEFUL SHUTDOWN] ✅ Shutdown complete');
-  console.log('========================================');
+  logger.info({ msg: 'graceful shutdown: Step 4/4: release resources' });
+  logger.info({ msg: 'graceful shutdown complete' });
   process.exit(0);
 }
 

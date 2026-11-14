@@ -1,15 +1,3 @@
-// Package main 场景 03：命令行工具 — Go 实现（简化版 wc）
-//
-// Go CLI 工具特点：
-// 1. 标准库 flag 解析参数，零第三方依赖
-// 2. go build 直接编译出原生静态二进制，无运行时依赖
-// 3. 启动速度极快（~1ms 级别）
-// 4. 二进制大小小（10-20MB，无 JVM）
-//
-// 和 Java 对比：
-// - Go 编译快，Java 依赖多编译慢
-// - Go 单文件分发，Java 需要 JRE 或 fat-jar
-// - Go 标准库 flag 简单但功能有限，Java Picocli 功能丰富
 package main
 
 import (
@@ -18,7 +6,36 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
+
+// ==================== zap 结构化日志初始化 ====================
+
+// logger 全局 SugaredLogger（JSON 输出 + stdout + DEBUG 级别 + caller 信息）
+var logger *zap.SugaredLogger
+
+func init() {
+	cfg := zap.NewProductionConfig()
+	cfg.OutputPaths = []string{"stdout"}
+	cfg.ErrorOutputPaths = []string{"stderr"}
+	cfg.EncoderConfig.TimeKey = "time"
+	cfg.EncoderConfig.LevelKey = "level"
+	cfg.EncoderConfig.MessageKey = "msg"
+	cfg.EncoderConfig.CallerKey = "caller"
+	cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	cfg.EncoderConfig.EncodeLevel = zapcore.LowercaseLevelEncoder
+	cfg.EncoderConfig.EncodeCaller = zapcore.ShortCallerEncoder
+	cfg.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel) // 最低 DEBUG 级别
+	cfg.Sampling = nil                                    // 关闭采样，保证 bench 等场景日志完整
+
+	l, err := cfg.Build()
+	if err != nil {
+		panic(fmt.Sprintf("zap init failed: %v", err))
+	}
+	logger = l.Sugar()
+}
 
 func main() {
 	// ====== 参数解析（零依赖，标准库 flag） ======
@@ -52,7 +69,7 @@ func main() {
 	for _, filePath := range files {
 		lines, words, chars, err := countFile(filePath)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "count: %v\n", err)
+			logger.Errorw("count file failed", "path", filePath, "error", err)
 			os.Exit(1)
 		}
 

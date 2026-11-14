@@ -231,7 +231,7 @@ async fn fanout(
             }
             Some(Err(e)) => {
                 // 任务 panic / 被 abort：仍要把它算作已收尾，避免死循环
-                eprintln!("task error: {:?}", e);
+                tracing::error!(error = ?e, "task error");
                 collected += 1;
             }
             None => break,
@@ -281,13 +281,21 @@ async fn fanout(
 
 #[tokio::main]
 async fn main() {
+    // 初始化 tracing 日志：JSON 格式 + 最低 DEBUG 级别 + stdout
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| "debug".into()))
+        .with_target(false)
+        .json()
+        .init();
+
     let app = Router::new()
         .route("/health", get(health))
         .route("/stats", get(stats))
         .route("/fanout", post(fanout));
 
     let addr = format!("0.0.0.0:{}", PORT);
-    println!("structured-concurrency (rust/tokio) listening on {}", addr);
+    tracing::info!(addr = %addr, "server starting");
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }

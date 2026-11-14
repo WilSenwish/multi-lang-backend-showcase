@@ -8,8 +8,16 @@
  * 4. Node 单线程 CPU 密集计算会阻塞事件循环（令牌桶计算没问题，很轻）
  */
 import Fastify from 'fastify';
+import pino from 'pino';
 
 const PORT = 8124;
+
+// pino 初始化：JSON 格式 + stdout + 最低 DEBUG 级别
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'debug',
+  timestamp: pino.stdTimeFunctions.isoTime,
+  transport: { target: 'pino/file', options: { destination: 1 } }
+});
 
 // ==================== 令牌桶 ====================
 
@@ -68,7 +76,7 @@ const bucket = new TokenBucket(1.0, 10);
 
 // ==================== Fastify 服务 ====================
 
-const fastify = Fastify({ logger: true });
+const fastify = Fastify({ logger });
 
 fastify.get('/api/heavy', async (_request, reply) => {
   if (!bucket.tryAcquire()) {
@@ -106,11 +114,10 @@ fastify.get('/health', async () => ({
 
 const start = async () => {
   try {
-    console.log('限流配置：QPS=1, burst=10 (每秒 1 个令牌，桶容量 10)');
-    console.log('Node 单线程事件循环 → 天然无并发竞争');
+    logger.debug({ msg: 'rate limit config', qps: 1, burst: 10 });
     await fastify.listen({ port: PORT, host: '0.0.0.0' });
   } catch (err) {
-    fastify.log.error(err);
+    logger.error({ err }, 'server failed to start');
     process.exit(1);
   }
 };

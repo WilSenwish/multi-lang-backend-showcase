@@ -27,6 +27,35 @@ from typing import List, Optional
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
+# ==================== structlog 结构化日志初始化 ====================
+import logging
+import sys
+
+import structlog
+
+
+def _configure_structlog() -> None:
+    """配置 structlog：JSON 格式输出到 stdout，最低 DEBUG 级别"""
+    structlog.configure(
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.processors.StackInfoRenderer(),
+            structlog.dev.set_exc_info,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.ExceptionPrettyPrinter(),
+            structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(logging.DEBUG),
+        context_class=dict,
+        logger_factory=structlog.PrintLoggerFactory(file=sys.stdout),
+        cache_logger_on_first_use=True,
+    )
+
+
+_configure_structlog()
+logger = structlog.get_logger()
+
 app = FastAPI(title="error-handling (python)")
 
 PORT = 8157
@@ -189,3 +218,10 @@ async def stats() -> dict:
         "last_unhandled": STATE["last_unhandled"],
         "last_trace_id": STATE["last_trace_id"],
     }
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    logger.info("service starting", port=PORT, title="error-handling")
+    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="debug")

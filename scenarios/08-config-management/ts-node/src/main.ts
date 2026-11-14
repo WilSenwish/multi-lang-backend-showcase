@@ -16,11 +16,19 @@
  */
 import 'dotenv/config';
 import Fastify from 'fastify';
+import pino from 'pino';
 import fs from 'fs';
 import path from 'path';
 import { z } from 'zod';
 
 const PORT = 8114;
+
+// pino 初始化：JSON 格式 + stdout + 最低 DEBUG 级别
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'debug',
+  timestamp: pino.stdTimeFunctions.isoTime,
+  transport: { target: 'pino/file', options: { destination: 1 } }
+});
 
 // ==================== zod 配置 Schema ====================
 
@@ -97,7 +105,7 @@ function loadConfig(): AppConfig {
   });
 
   // 5. 额外验证（跨字段依赖等复杂校验）
-  console.log(`[TS-Node] 配置加载成功: env=${config.env}, port=${config.server.port}`);
+  logger.info({ msg: 'config loaded', env: config.env, port: config.server.port });
 
   return config;
 }
@@ -106,7 +114,7 @@ const globalConfig = loadConfig();
 
 // ==================== Fastify 服务 ====================
 
-const fastify = Fastify({ logger: true });
+const fastify = Fastify({ logger });
 
 fastify.get('/config', async () => {
   const cfg: any = JSON.parse(JSON.stringify(globalConfig));
@@ -118,16 +126,15 @@ fastify.get('/config', async () => {
 const start = async () => {
   try {
     await fastify.listen({ port: PORT, host: '0.0.0.0' });
-    console.log(`[TS-Node] config-management server starting on ${PORT}`);
+    logger.info({ msg: 'server starting', addr: `0.0.0.0:${PORT}` });
   } catch (err) {
-    fastify.log.error(err);
+    logger.error({ err }, 'server failed to start');
     process.exit(1);
   }
 };
 
-console.log('环境变量覆盖示例：');
-console.log('  MYAPP_SERVER__PORT=9000 MYAPP_DATABASE__URL="prod-db:3306" npm run dev');
-console.log('  （Node 用 __ 双下划线分隔层级，和 Rust config crate 一致）');
-console.log();
+logger.debug('env var example:');
+logger.debug('  MYAPP_SERVER__PORT=9000 MYAPP_DATABASE__URL="prod-db:3306" npm run dev');
+logger.debug('  (Node uses __ double underscore for level separator, same as Rust config crate)');
 
 start();

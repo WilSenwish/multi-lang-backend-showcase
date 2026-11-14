@@ -23,8 +23,16 @@
  */
 
 import Fastify from "fastify";
+import pino from "pino";
 
 const PORT = 8159;
+
+// pino 初始化：JSON 格式 + stdout + 最低 DEBUG 级别
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'debug',
+  timestamp: pino.stdTimeFunctions.isoTime,
+  transport: { target: 'pino/file', options: { destination: 1 } }
+});
 
 interface ErrorBody {
   kind: string;
@@ -123,7 +131,7 @@ process.on("unhandledRejection", (reason: unknown) => {
   state.lastUnhandled = reason instanceof Error ? reason.message : String(reason);
 });
 
-const app = Fastify({ logger: false });
+const app = Fastify({ logger });
 
 app.setErrorHandler((err: unknown, req, reply) => {
   state.handled += 1;
@@ -196,9 +204,9 @@ app.get("/stats", async (): Promise<StatsBody> => ({
 app
   .listen({ port: PORT, host: "127.0.0.1" })
   .then(() => {
-    console.log(`[ts-node] 17-error-handling listening on ${PORT}`);
+    logger.info({ msg: 'server starting', addr: `127.0.0.1:${PORT}` });
   })
   .catch((err) => {
-    console.error(err);
+    logger.error({ err }, 'server failed to start');
     process.exit(1);
   });

@@ -23,6 +23,35 @@ import yaml
 from fastapi import FastAPI
 from pydantic import BaseModel, Field, field_validator
 
+# ==================== structlog 结构化日志初始化 ====================
+import logging
+import sys
+
+import structlog
+
+
+def _configure_structlog() -> None:
+    """配置 structlog：JSON 格式输出到 stdout，最低 DEBUG 级别"""
+    structlog.configure(
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.processors.StackInfoRenderer(),
+            structlog.dev.set_exc_info,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.ExceptionPrettyPrinter(),
+            structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(logging.DEBUG),
+        context_class=dict,
+        logger_factory=structlog.PrintLoggerFactory(file=sys.stdout),
+        cache_logger_on_first_use=True,
+    )
+
+
+_configure_structlog()
+logger = structlog.get_logger()
+
 app = FastAPI(title="config-management-python", version="1.0.0")
 
 
@@ -68,9 +97,9 @@ def load_config() -> AppConfig:
     if os.path.exists(yaml_path):
         with open(yaml_path, encoding="utf-8") as f:
             cfg_data = yaml.safe_load(f) or {}
-        print(f"[Python] 从 {yaml_path} 加载配置")
+        logger.info("config loaded from yaml", path=yaml_path)
     else:
-        print(f"[Python] {yaml_path} 未找到，使用默认值")
+        logger.info("yaml not found, using defaults", path=yaml_path)
 
     # 2. 环境变量覆盖（优先级最高）
     # MYAPP_SERVER_PORT → cfg_data["server"]["port"]
@@ -94,7 +123,7 @@ def load_config() -> AppConfig:
         d[last] = _auto_cast(val)
 
     cfg = AppConfig.model_validate(cfg_data)
-    print(f"[Python] 配置加载成功: env={cfg.env}, port={cfg.server.port}")
+    logger.info("config loaded successfully", env=cfg.env, port=cfg.server.port)
     return cfg
 
 
@@ -127,6 +156,6 @@ def config():
 
 if __name__ == "__main__":
     import uvicorn
-    print("环境变量覆盖示例：")
-    print('  MYAPP_SERVER_PORT=9000 MYAPP_DATABASE__URL="prod-db:3306" python main.py')
-    uvicorn.run(app, host="0.0.0.0", port=global_config.server.port)
+
+    logger.info("service starting", port=global_config.server.port, title="config-management-python")
+    uvicorn.run(app, host="0.0.0.0", port=global_config.server.port, log_level="debug")

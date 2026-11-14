@@ -33,8 +33,16 @@ import os from 'node:os';
 import { Worker } from 'node:worker_threads';
 
 import Fastify from 'fastify';
+import pino from 'pino';
 
 const PORT = 8139;
+
+// pino 初始化：JSON 格式 + stdout + 最低 DEBUG 级别
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'debug',
+  timestamp: pino.stdTimeFunctions.isoTime,
+  transport: { target: 'pino/file', options: { destination: 1 } }
+});
 
 /** BigInt 任意精度，不会自动溢出，必须手动截断才能与 uint64 对齐 */
 const MASK = (1n << 64n) - 1n;
@@ -65,7 +73,7 @@ interface ComputeResponse {
   results: TaskResult[];
 }
 
-const fastify = Fastify({ logger: false });
+const fastify = Fastify({ logger });
 
 /**
  * 手动实现 Worker 池：创建 `concurrency` 个 worker，
@@ -171,7 +179,7 @@ fastify.get('/health', async () => ({
 
 async function main(): Promise<void> {
   await fastify.listen({ port: PORT, host: '0.0.0.0' });
-  console.log(`[TS-Node] cpu-bound-parallel server starting on ${PORT}`);
+  logger.info({ msg: 'server starting', addr: `0.0.0.0:${PORT}` });
 }
 
 void main();

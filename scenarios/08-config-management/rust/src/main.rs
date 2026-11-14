@@ -162,26 +162,32 @@ async fn config_handler(State(cfg): State<SharedState>) -> impl axum::response::
 
 #[tokio::main]
 async fn main() {
-    println!("环境变量覆盖示例：");
-    println!("  MYAPP_SERVER__PORT=9000 MYAPP_DATABASE__URL=\"prod-db:3306\" cargo run");
-    println!("  （注意：Rust config crate 用 __ 双下划线分隔层级）");
-    println!();
+    // 初始化 tracing 日志：JSON 格式 + 最低 DEBUG 级别 + stdout
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| "debug".into()))
+        .with_target(false)
+        .json()
+        .init();
+
+    tracing::debug!("env var example:");
+    tracing::debug!("  MYAPP_SERVER__PORT=9000 MYAPP_DATABASE__URL=\"prod-db:3306\" cargo run");
+    tracing::debug!("  (note: Rust config crate uses __ double underscore for level separator)");
 
     let cfg = match load_config() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("配置加载失败: {e}");
+            tracing::error!(error = %e, "config load failed");
             std::process::exit(1);
         }
     };
 
     if let Err(e) = cfg.validate() {
-        eprintln!("配置校验失败: {e}");
+        tracing::error!(error = %e, "config validation failed");
         std::process::exit(1);
     }
 
-    println!("[Rust] 配置加载成功: env={}, port={}, db={}",
-             cfg.env, cfg.server.port, cfg.database.url);
+    tracing::info!(env = %cfg.env, port = cfg.server.port, db = %cfg.database.url, "config loaded successfully");
 
     let shared_cfg = Arc::new(cfg);
     let app = Router::new()
@@ -189,7 +195,7 @@ async fn main() {
         .with_state(shared_cfg.clone());
 
     let addr = "0.0.0.0:8113";
-    println!("[Rust] config-management server starting on {}", addr);
+    tracing::info!(addr = %addr, "server starting");
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }

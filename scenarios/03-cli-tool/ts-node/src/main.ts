@@ -13,8 +13,16 @@
  * - 分发是痛点（要 Node 或打包后体积大）
  */
 import { Command } from 'commander';
+import pino from 'pino';
 import * as fs from 'fs';
 import * as path from 'path';
+
+// pino 初始化：JSON 格式 + stdout + 最低 DEBUG 级别
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'debug',
+  timestamp: pino.stdTimeFunctions.isoTime,
+  transport: { target: 'pino/file', options: { destination: 1 } }
+});
 
 // 统计单个文件
 function countFile(filePath: string): [number, number, number] {
@@ -23,10 +31,10 @@ function countFile(filePath: string): [number, number, number] {
     content = fs.readFileSync(filePath, 'utf-8');
   } catch (err: any) {
     if (err.code === 'ENOENT') {
-      console.error(`count: 无法打开 '${filePath}': 文件不存在`);
+      logger.error({ msg: `count: cannot open '${filePath}': file not found` });
       process.exit(1);
     }
-    console.error(`count: 读取 '${filePath}' 失败: ${err.message}`);
+    logger.error({ msg: `count: read '${filePath}' failed: ${err.message}` });
     process.exit(1);
   }
 
@@ -98,7 +106,7 @@ function main(): void {
       }
 
       if (multi) {
-        console.error('---');
+        logger.error({ msg: '---' });
       }
 
       const label = multi ? 'total' : '';

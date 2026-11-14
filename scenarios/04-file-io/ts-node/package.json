@@ -8,7 +8,8 @@
     "start": "node dist/main.js"
   },
   "dependencies": {
-    "fastify": "^4.28.1"
+    "fastify": "^4.28.1",
+    "pino": "^9.6.0"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

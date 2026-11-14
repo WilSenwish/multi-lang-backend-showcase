@@ -47,7 +47,7 @@ POST /call-external
 |------|------------|---------|---------|--------|
 | Java | Apache HttpClient 5（`PoolingHttpClientConnectionManager`，逐请求 `RequestConfig` 超时） | 手动指数退避（次数取请求体 `retry_times`） | Resilience4j 2.2.0（`spring-boot3` starter + 编程式 `executeSupplier()`） | HC5 池（`setConnectionManagerShared(true)`） |
 | Go | 标准库 `http.Client` + `http.Transport` | 手动指数退避 | 手动实现（阈值 3 次连续失败） | Transport 连接池 |
-| Python | `httpx`（async） | 手动指数退避（tenacity 仅备选，见 requirements） | 手动实现（阈值 3 次连续失败） | httpx 默认连接池 |
+| Python | `httpx`（async）+ **httpx.MockTransport**（零端口 Mock Server） | **tenacity.wait_exponential** 生成退避 | **pybreaker**（fail_max=3, reset_timeout=10） | httpx 默认连接池 |
 | Rust | `reqwest` | 手动指数退避 | 手动实现（阈值 3 次连续失败） | reqwest 默认连接池 |
 | TS(Node) | `undici` | 手动指数退避 | 手动实现（阈值 3 次连续失败） | undici Pool |
 
@@ -69,17 +69,17 @@ POST /call-external
 | **底层库** | Apache HttpClient 5 | 标准库 net/http | httpx | reqwest (tokio) | undici (原生 fetch 底层) |
 | **连接池** | ✅ PoolingHttpClientConnectionManager | ✅ Transport（自动） | ✅ httpx 默认 | ✅ reqwest 默认 | ✅ undici Pool |
 | **超时粒度** | ✅ connectTimeout vs responseTimeout（逐请求） | ✅ DialContext vs ResponseHeaderTimeout | ✅ Timeout(connect/read/write) | ✅ connect_timeout + timeout() | ⚠️ 必须用 AbortSignal deadline（自带定时器有 1s 地板，见下） |
-| **重试** | ✅ 手动指数退避（次数取请求体 retry_times） | ✅ 手动指数退避 | ✅ 手动指数退避（tenacity 可选） | ✅ 手动指数退避 | ✅ 手动指数退避 |
-| **熔断** | ✅ Resilience4j 2.2.0 编程式 executeSupplier() | ✅ 手动（阈值 3 次连续失败） | ✅ 手动（阈值 3 次连续失败） | ✅ 手动（阈值 3 次连续失败） | ✅ 手动（阈值 3 次连续失败） |
+| **重试** | ✅ 手动指数退避（次数取请求体 retry_times） | ✅ 手动指数退避 | ✅ **tenacity.wait_exponential** 生成退避（手动循环 + tenacity） | ✅ 手动指数退避 | ✅ 手动指数退避 |
+| **熔断** | ✅ Resilience4j 2.2.0 编程式 executeSupplier() | ✅ 手动（阈值 3 次连续失败） | ✅ **pybreaker**（生产级熔断库） | ✅ 手动（阈值 3 次连续失败） | ✅ 手动（阈值 3 次连续失败） |
 | **异步支持** | HC5 同步（线程池） | 同步 + goroutine | ✅ httpx.AsyncClient | ✅ reqwest async (tokio) | ✅ undici fetch Promise |
 | **错误处理** | ExternalCallException（携带响应 map 上抛，让熔断器记失败） | error + status code 检查 | httpx.TimeoutException / RequestError | reqwest::Error + 手动 match | try/catch + response.statusCode（AggregateError 要展平） |
 | **JSON 响应** | parseBody：body 解析成 JSON 对象 | json.NewDecoder | resp.json() | resp.json::<serde_json::Value>() | await body.text() + JSON.parse |
 | **连接数上限** | maxTotal=100, maxPerRoute=20 | MaxIdleConns=100, MaxConnsPerHost=20 | 默认 + Limits(max_connections) | reqwest 默认 | connections=100 |
 | **空闲连接回收** | evictIdleConnections(30s) | IdleConnTimeout=30s | httpx 默认 | reqwest 默认 | undici 默认 |
-| **零依赖** | ❌ Resilience4j + HttpClient 5 | ✅ 标准库（重试/熔断手动） | ❌ httpx + fastapi | ❌ reqwest + axum | ❌ undici + fastify |
-| **代码行数** | ~260 行（配置+服务+控制+Mock） | ~220 行（全手动，熔断器） | ~200 行 | ~230 行 | ~220 行 |
-| **优势** | Resilience4j 生态全（限流/隔离开箱即用）、HC5 连接池成熟 | 标准库极简、goroutine 并发安全 | httpx async、FastAPI 声明式 | reqwest async-first + Rust Result 安全 | undici 是 Node fetch 底层，性能好 |
-| **痛点 & 坑** | Resilience4j starter **版本必须对齐 Boot 主版本**（boot2 starter 在 Boot 3 下注解静默失效）；HC5 的 manager 与 client 生命周期要手动解耦 | 手动熔断代码多、http.Client 要自己存全局实例 | httpx 不如 requests 流行、async 调试难 | reqwest 依赖 tokio 较重、Cargo 下载慢 | undici 自带定时器 1s 地板；`import { request }` 会被处理器形参遮蔽 |
+| **零依赖** | ❌ Resilience4j + HttpClient 5 | ✅ 标准库（重试/熔断手动） | ❌ httpx + fastapi + pybreaker + tenacity | ❌ reqwest + axum | ❌ undici + fastify |
+| **代码行数** | ~260 行（配置+服务+控制+Mock） | ~220 行（全手动，熔断器） | ~220 行（pybreaker + tenacity + MockTransport） | ~230 行 | ~220 行 |
+| **优势** | Resilience4j 生态全（限流/隔离开箱即用）、HC5 连接池成熟 | 标准库极简、goroutine 并发安全 | httpx async、FastAPI 声明式、pybreaker/tenacity 生产级可靠 | reqwest async-first + Rust Result 安全 | undici 是 Node fetch 底层，性能好 |
+| **痛点 & 坑** | Resilience4j starter **版本必须对齐 Boot 主版本**（boot2 starter 在 Boot 3 下注解静默失效）；HC5 的 manager 与 client 生命周期要手动解耦 | 手动熔断代码多、http.Client 要自己存全局实例 | pybreaker 是线程安全类，pybreaker.CircuitBreakerState 枚举 API 要对版本；tenacity.wait_exponential 生成的是秒级 float | reqwest 依赖 tokio 较重、Cargo 下载慢 | undici 自带定时器 1s 地板；`import { request }` 会被处理器形参遮蔽 |
 
 ---
 

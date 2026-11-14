@@ -205,6 +205,14 @@ fn err_resp(msg: String) -> Response {
 
 #[tokio::main]
 async fn main() {
+    // 初始化 tracing 日志：JSON 格式 + 最低 DEBUG 级别 + stdout
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| "debug".into()))
+        .with_target(false)
+        .json()
+        .init();
+
     let app = Router::new()
         .route("/file/write", post(write))
         .route("/file/read", get(read))
@@ -212,7 +220,7 @@ async fn main() {
         .with_state(());
 
     let addr = "0.0.0.0:8098";
-    println!("[Rust] file-io server starting on {}", addr);
+    tracing::info!(addr = %addr, "server starting");
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await

@@ -1,16 +1,41 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"log"
-	"net/http"
 	"os"
-	"strconv"
 	"strings"
 
+	"github.com/gin-gonic/gin"
 	"github.com/spf13/viper"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
+
+// ==================== zap 结构化日志初始化 ====================
+
+// logger 全局 SugaredLogger（JSON 输出 + stdout + DEBUG 级别 + caller 信息）
+var logger *zap.SugaredLogger
+
+func init() {
+	cfg := zap.NewProductionConfig()
+	cfg.OutputPaths = []string{"stdout"}
+	cfg.ErrorOutputPaths = []string{"stderr"}
+	cfg.EncoderConfig.TimeKey = "time"
+	cfg.EncoderConfig.LevelKey = "level"
+	cfg.EncoderConfig.MessageKey = "msg"
+	cfg.EncoderConfig.CallerKey = "caller"
+	cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	cfg.EncoderConfig.EncodeLevel = zapcore.LowercaseLevelEncoder
+	cfg.EncoderConfig.EncodeCaller = zapcore.ShortCallerEncoder
+	cfg.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel) // 最低 DEBUG 级别
+	cfg.Sampling = nil                                    // 关闭采样，保证 bench 等场景日志完整
+
+	l, err := cfg.Build()
+	if err != nil {
+		panic(fmt.Sprintf("zap init failed: %v", err))
+	}
+	logger = l.Sugar()
+}
 
 // 场景 08：多环境配置管理 — Go 实现（viper）
 //
@@ -95,7 +120,7 @@ func loadConfig() (*AppConfig, error) {
 	// 基础配置：config.yaml
 	v.SetConfigName("config")
 	v.SetConfigType("yaml")
-	v.AddConfigPath(".")       // 当前目录
+	v.AddConfigPath(".")        // 当前目录
 	v.AddConfigPath("./config") // config 子目录
 
 	// 多环境：MYAPP_ENV=prod 则读 config-prod.yaml
@@ -124,7 +149,7 @@ func loadConfig() (*AppConfig, error) {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
 			return nil, fmt.Errorf("配置文件读取失败: %w", err)
 		}
-		log.Printf("[Go] 配置文件未找到，使用默认值 + 环境变量")
+		logger.Debugw("配置文件未找到，使用默认值 + 环境变量")
 	}
 
 	// 解析到结构体
@@ -148,67 +173,63 @@ func loadConfig() (*AppConfig, error) {
 
 var globalConfig *AppConfig
 
-func configHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+func configHandler(c *gin.Context) {
+	// 响应专用结构体：不能直接用 DatabaseConfig —— 它的 Password 带 `json:"-"`，
+	// 会把脱敏值一起吞掉（响应里直接少了 password 键，与其他四门语言不一致）。
+	type DatabaseResp struct {
+		URL      string `json:"url"`
+		User     string `json:"user"`
+		Password string `json:"password"`
+		PoolSize int    `json:"pool_size"`
+	}
 
-// 响应专用结构体：不能直接用 DatabaseConfig —— 它的 Password 带 `json:"-"`，
-// 会把脱敏值一起吞掉（响应里直接少了 password 键，与其他四门语言不一致）。
-type DatabaseResp struct {
-	URL      string `json:"url"`
-	User     string `json:"user"`
-	Password string `json:"password"`
-	PoolSize int    `json:"pool_size"`
-}
+	// 脱敏密码
+	type RespConfig struct {
+		Server   ServerConfig  `json:"server"`
+		Database DatabaseResp  `json:"database"`
+		Logging  LoggingConfig `json:"logging"`
+		Env      string        `json:"env"`
+		Source   string        `json:"source"`
+	}
+	resp := RespConfig{
+		Server:   globalConfig.Server,
+		Logging:  globalConfig.Logging,
+		Env:      globalConfig.Env,
+		Source:   globalConfig.Source,
+	}
+	resp.Database = DatabaseResp{
+		URL:      globalConfig.Database.URL,
+		User:     globalConfig.Database.User,
+		Password: "********", // 脱敏
+		PoolSize: globalConfig.Database.PoolSize,
+	}
 
-// 脱敏密码
-type RespConfig struct {
-	Server   ServerConfig  `json:"server"`
-	Database DatabaseResp  `json:"database"`
-	Logging  LoggingConfig `json:"logging"`
-	Env      string        `json:"env"`
-	Source   string        `json:"source"`
-}
-resp := RespConfig{
-	Server:   globalConfig.Server,
-	Logging:  globalConfig.Logging,
-	Env:      globalConfig.Env,
-	Source:   globalConfig.Source,
-}
-resp.Database = DatabaseResp{
-	URL:      globalConfig.Database.URL,
-	User:     globalConfig.Database.User,
-	Password: "********", // 脱敏
-	PoolSize: globalConfig.Database.PoolSize,
-}
-
-	json.NewEncoder(w).Encode(resp)
+	c.JSON(200, resp)
 }
 
 // ==================== main ====================
 
 func main() {
-	// 打印 env 覆盖示例
+	defer logger.Sync() // flush 日志
+
+	// 打印 env 覆盖示例（给用户看的帮助文字，保留 fmt.Println）
 	fmt.Println("环境变量覆盖示例：")
 	fmt.Println("  MYAPP_SERVER_PORT=9000 MYAPP_DATABASE_URL=prod-db:3306 go run main.go")
 	fmt.Println("")
 
 	cfg, err := loadConfig()
 	if err != nil {
-		log.Fatalf("配置加载失败: %v", err)
+		logger.Fatalw("配置加载失败", "error", err)
 	}
 	globalConfig = cfg
 
-	fmt.Printf("[Go] 配置加载成功: env=%s, port=%d, db=%s\n",
-		cfg.Env, cfg.Server.Port, cfg.Database.URL)
+	logger.Infow("配置加载成功", "env", cfg.Env, "port", cfg.Server.Port, "db", cfg.Database.URL)
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/config", configHandler)
+	r := gin.Default() // 自带 Recovery + Logger 中间件
+	r.GET("/config", configHandler)
 
-	log.Printf("[Go] config-management server starting on %s", listenAddr)
-	if err := http.ListenAndServe(listenAddr, mux); err != nil {
-		log.Fatalf("server failed: %v", err)
+	logger.Infow("server starting", "addr", listenAddr)
+	if err := r.Run(listenAddr); err != nil {
+		logger.Fatalw("server failed", "error", err)
 	}
 }
-
-// 占位：防止 strconv 未使用
-var _ = strconv.Itoa

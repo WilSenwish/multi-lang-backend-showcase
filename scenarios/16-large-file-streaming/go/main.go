@@ -20,17 +20,45 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
-	"log"
-	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"syscall"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
+
+// ==================== zap 结构化日志初始化 ====================
+
+// logger 全局 SugaredLogger（JSON 输出 + stdout + DEBUG 级别 + caller 信息）
+var logger *zap.SugaredLogger
+
+func init() {
+	cfg := zap.NewProductionConfig()
+	cfg.OutputPaths = []string{"stdout"}
+	cfg.ErrorOutputPaths = []string{"stderr"}
+	cfg.EncoderConfig.TimeKey = "time"
+	cfg.EncoderConfig.LevelKey = "level"
+	cfg.EncoderConfig.MessageKey = "msg"
+	cfg.EncoderConfig.CallerKey = "caller"
+	cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	cfg.EncoderConfig.EncodeLevel = zapcore.LowercaseLevelEncoder
+	cfg.EncoderConfig.EncodeCaller = zapcore.ShortCallerEncoder
+	cfg.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel) // 最低 DEBUG 级别
+	cfg.Sampling = nil                                    // 关闭采样，保证 bench 等场景日志完整
+
+	l, err := cfg.Build()
+	if err != nil {
+		panic(fmt.Sprintf("zap init failed: %v", err))
+	}
+	logger = l.Sugar()
+}
 
 const (
 	PORT = 8151
@@ -47,9 +75,9 @@ const (
 )
 
 var (
-	DEFAULT_SIZE_MB    = 32
-	DEFAULT_CHUNK_KIB  = 64
-	DEFAULT_MIN_AMOUNT = 50000
+	DEFAULT_SIZE_MB     = 32
+	DEFAULT_CHUNK_KIB   = 64
+	DEFAULT_MIN_AMOUNT  = 50000
 )
 
 type streamRequest struct {
@@ -270,14 +298,10 @@ func process(src, dst string, chunk, minAmount int) (*streamResponse, error) {
 	return res, nil
 }
 
-func handler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "use POST", http.StatusMethodNotAllowed)
-		return
-	}
+func handler(c *gin.Context) {
 	var req streamRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "bad json: " + err.Error()})
 		return
 	}
 	sizeMb, chunkKib, minAmount := DEFAULT_SIZE_MB, DEFAULT_CHUNK_KIB, DEFAULT_MIN_AMOUNT
@@ -300,7 +324,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	tAll := time.Now()
 
 	if err := generate(src, lines); err != nil {
-		http.Error(w, "generate failed: "+err.Error(), http.StatusInternalServerError)
+		c.JSON(500, gin.H{"error": "generate failed: " + err.Error()})
 		return
 	}
 	genMark := time.Since(tAll).Milliseconds()
@@ -309,7 +333,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		os.Remove(src)
 		os.Remove(dst)
-		http.Error(w, "process failed: "+err.Error(), http.StatusInternalServerError)
+		c.JSON(500, gin.H{"error": "process failed: " + err.Error()})
 		return
 	}
 	elapsed := time.Since(tAll).Milliseconds()
@@ -334,11 +358,13 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	res.RssPeakBytes = rssBytes()
 	res.RssDeltaBytes = res.RssPeakBytes - res.RssBeforeBytes
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(res)
-	log.Printf("stream: size=%dMB chunk=%dKiB lines=%d bytes_out=%d rss_delta=%.1fMiB in %dms",
-		sizeMb, chunkKib, res.LinesRead, res.BytesWritten,
-		float64(res.RssDeltaBytes)/(1024*1024), res.ElapsedMs)
+	logger.Infow("stream completed",
+		"sizeMb", sizeMb, "chunkKib", chunkKib, "lines", res.LinesRead,
+		"bytesOut", res.BytesWritten, "rss_delta_MiB", float64(res.RssDeltaBytes)/(1024*1024),
+		"elapsedMs", res.ElapsedMs,
+	)
+
+	c.JSON(200, res)
 }
 
 func clamp(v, lo, hi int) int {
@@ -352,7 +378,21 @@ func clamp(v, lo, hi int) int {
 }
 
 func main() {
-	http.HandleFunc("/stream/process", handler)
-	log.Printf("large-file-streaming (go) listening on %d", PORT)
-	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", PORT), nil))
+	defer logger.Sync() // flush 日志
+
+	r := gin.Default() // 自带 Recovery + Logger 中间件
+	r.POST("/stream/process", handler)
+	r.GET("/health", func(c *gin.Context) {
+		c.JSON(200, gin.H{
+			"service": "large-file-streaming",
+			"lang":    "go",
+			"port":    PORT,
+		})
+	})
+
+	addr := ":" + strconv.Itoa(PORT)
+	logger.Infow("server starting", "addr", addr)
+	if err := r.Run(addr); err != nil {
+		logger.Fatalw("server failed", "error", err)
+	}
 }

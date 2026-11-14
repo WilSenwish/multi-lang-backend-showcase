@@ -18,16 +18,44 @@ import argparse
 import sys
 from pathlib import Path
 
+# ==================== structlog 结构化日志初始化 ====================
+import logging
+
+import structlog
+
+
+def _configure_structlog() -> None:
+    """配置 structlog：JSON 格式输出到 stdout，最低 DEBUG 级别"""
+    structlog.configure(
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.processors.StackInfoRenderer(),
+            structlog.dev.set_exc_info,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.ExceptionPrettyPrinter(),
+            structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(logging.DEBUG),
+        context_class=dict,
+        logger_factory=structlog.PrintLoggerFactory(file=sys.stdout),
+        cache_logger_on_first_use=True,
+    )
+
+
+_configure_structlog()
+logger = structlog.get_logger()
+
 
 def count_file(path: str) -> tuple[int, int, int]:
     """统计单个文件的 (lines, words, chars)"""
     try:
         content = Path(path).read_text(encoding="utf-8")
     except FileNotFoundError:
-        print(f"count: 无法打开 '{path}': 文件不存在", file=sys.stderr)
+        logger.error("count: cannot open file", path=path, err="file not found")
         sys.exit(1)
     except OSError as e:
-        print(f"count: 读取 '{path}' 失败: {e}", file=sys.stderr)
+        logger.error("count: read failed", path=path, err=str(e))
         sys.exit(1)
 
     # 行数
@@ -71,9 +99,9 @@ def print_result(label: str, lines: int, words: int, chars: int,
 
     out = " ".join(parts)
     if label:
-        print(f"{out}  {label}")
+        logger.info("result", output=f"{out}  {label}")
     else:
-        print(out)
+        logger.info("result", output=out)
 
 
 def main() -> None:
@@ -98,11 +126,12 @@ def main() -> None:
         total_c += c
 
     if multi:
-        print("---")
+        logger.info("result", output="---")
 
     label = "total" if multi else ""
     print_result(label, total_l, total_w, total_c, show_l, show_w, show_c, default_all)
 
 
 if __name__ == "__main__":
+    logger.info("cli tool starting", tool="count", files=len(sys.argv) - 1)
     main()

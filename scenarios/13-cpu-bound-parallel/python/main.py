@@ -43,6 +43,35 @@ import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
+# ==================== structlog 结构化日志初始化 ====================
+import logging
+import sys
+
+import structlog
+
+
+def _configure_structlog() -> None:
+    """配置 structlog：JSON 格式输出到 stdout，最低 DEBUG 级别"""
+    structlog.configure(
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.processors.StackInfoRenderer(),
+            structlog.dev.set_exc_info,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.ExceptionPrettyPrinter(),
+            structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(logging.DEBUG),
+        context_class=dict,
+        logger_factory=structlog.PrintLoggerFactory(file=sys.stdout),
+        cache_logger_on_first_use=True,
+    )
+
+
+_configure_structlog()
+logger = structlog.get_logger()
+
 app = FastAPI(title="cpu-bound-parallel-python", version="1.0.0")
 
 # MMIX 线性同余发生器常数：state = state * MULT + INC (mod 2^64)
@@ -155,4 +184,7 @@ def health():
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8137, log_level="warning")
+    import uvicorn
+
+    logger.info("service starting", port=8137, title="cpu-bound-parallel-python")
+    uvicorn.run(app, host="0.0.0.0", port=8137, log_level="debug")
