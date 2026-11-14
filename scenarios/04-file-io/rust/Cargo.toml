@@ -2,7 +2,7 @@
 name = "file-io"
 version = "1.0.0"
 edition = "2021"
-description = "Multi-Lang-Backend-Showcase: Rust 文件 IO 对比"
+description = "multi-lang-backend-showcase: Rust 文件 IO 对比"
 
 [dependencies]
 axum = "0.7"

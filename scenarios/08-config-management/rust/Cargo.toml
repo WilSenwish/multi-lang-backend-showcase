@@ -2,7 +2,7 @@
 name = "config-management"
 version = "1.0.0"
 edition = "2021"
-description = "Multi-Lang-Backend-Showcase: Rust 多环境配置 (config crate)"
+description = "multi-lang-backend-showcase: Rust 多环境配置 (config crate)"
 
 [dependencies]
 axum = "0.7"

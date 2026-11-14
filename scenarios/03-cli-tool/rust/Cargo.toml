@@ -2,7 +2,7 @@
 name = "count"
 version = "1.0.0"
 edition = "2021"
-description = "Multi-Lang-Backend-Showcase: Rust wc 命令行工具"
+description = "multi-lang-backend-showcase: Rust wc 命令行工具"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

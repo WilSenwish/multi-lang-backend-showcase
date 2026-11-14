@@ -2,7 +2,7 @@
 name = "graceful-shutdown"
 version = "1.0.0"
 edition = "2021"
-description = "Multi-Lang-Backend-Showcase: Rust graceful shutdown (axum + tokio)"
+description = "multi-lang-backend-showcase: Rust graceful shutdown (axum + tokio)"
 
 [dependencies]
 axum = "0.7"

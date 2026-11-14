@@ -1,7 +1,7 @@
 {
   "name": "graceful-shutdown",
   "version": "1.0.0",
-  "description": "Multi-Lang-Backend-Showcase: TS Node graceful shutdown",
+  "description": "multi-lang-backend-showcase: TS Node graceful shutdown",
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "build": "tsc",

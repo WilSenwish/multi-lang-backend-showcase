@@ -1,7 +1,7 @@
 {
   "name": "db-crud-pool",
   "version": "1.0.0",
-  "description": "Multi-Lang-Backend-Showcase: TS Node DB CRUD (SQLite)",
+  "description": "multi-lang-backend-showcase: TS Node DB CRUD (SQLite)",
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "build": "tsc",

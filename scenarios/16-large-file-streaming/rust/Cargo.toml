@@ -2,7 +2,7 @@
 name = "large-file-streaming"
 version = "1.0.0"
 edition = "2021"
-description = "Multi-Lang-Backend-Showcase: Rust 大文件流式处理（固定缓冲 + 手写行边界 + 自定义分配器计内存）"
+description = "multi-lang-backend-showcase: Rust 大文件流式处理（固定缓冲 + 手写行边界 + 自定义分配器计内存）"
 
 [dependencies]
 axum = "0.7"

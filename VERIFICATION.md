@@ -1,6 +1,6 @@
 # 本地验证报告（VERIFICATION）
 
-> 多语言后端对比仓库 `Multi-Lang-Backend-Showcase` —— **13 个基础场景 ＋ 5 个边界场景 × 5 种语言**
+> 多语言后端对比仓库 `multi-lang-backend-showcase` —— **13 个基础场景 ＋ 5 个边界场景 × 5 种语言**
 > （Java / Go / Python / Rust / TS-Node = **90 个验证单元**）的逐场景本地运行验证、缺陷修复与验证方法沉淀。
 >
 > 最后更新：2026-10-17（验证强度加强计划批次 5 —— 场景 10「速率限制」升级为
@@ -259,7 +259,7 @@ return body;
 `npm install` 会跳过构建 → 运行时报 `Could not locate the bindings file`。本机已执行：
 
 ```bash
-cd /Users/chenjunbing/Develop/Project/Personal/Multi-Lang-Backend-Showcase/scenarios/11-db-crud-pool/ts-node
+cd /Users/chenjunbing/Develop/Project/Personal/multi-lang-backend-showcase/scenarios/11-db-crud-pool/ts-node
 npm rebuild better-sqlite3 --build-from-source
 ```
 
@@ -365,7 +365,7 @@ $ python main.py -l -w ../../../README.md
 > 就是这个解析缺陷造成的**误判**（`工具 lines=None`）；修复后的权威结果见
 > `.wb_verify/all_results.json` 与 `runs/20261016-113119_full.json`（65/65 PASS）。
 >
-> 仓库更名（`multi-lang-backend-showcase` → `Multi-Lang-Backend-Showcase`）后从新路径全量复跑，
+> 仓库更名（`multi-lang-backend-showcase` → `multi-lang-backend-showcase`）后从新路径全量复跑，
 > 结果为 `runs/20261016-120124_full.json`（同样 65/65 PASS）—— 用于确认更名与脚本路径改造没有破坏任何构建/运行链路。
 
 ### 7.11 判定逻辑本身要配"反向对照"
@@ -383,7 +383,7 @@ $ python main.py -l -w ../../../README.md
 ## 8. 复现命令
 
 ```bash
-cd /Users/chenjunbing/Develop/Project/Personal/Multi-Lang-Backend-Showcase
+cd /Users/chenjunbing/Develop/Project/Personal/multi-lang-backend-showcase
 
 # 全量验证（18 场景 × 5 语言，共 90 个验证单元）；结果写入 .wb_verify/all_results.{json,md}，并归档到 .wb_verify/runs/
 python3 .wb_verify/verify_all.py

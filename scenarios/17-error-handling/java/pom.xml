@@ -16,7 +16,7 @@
     <version>1.0.0</version>
     <packaging>jar</packaging>
     <name>error-handling</name>
-    <description>Multi-Lang-Backend-Showcase: Java 错误处理深水区（checked exception + @RestControllerAdvice + CompletableFuture 兜底）</description>
+    <description>multi-lang-backend-showcase: Java 错误处理深水区（checked exception + @RestControllerAdvice + CompletableFuture 兜底）</description>
 
     <properties>
         <java.version>17</java.version>

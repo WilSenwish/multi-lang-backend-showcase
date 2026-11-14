@@ -1,7 +1,7 @@
 {
   "name": "count",
   "version": "1.0.0",
-  "description": "Multi-Lang-Backend-Showcase: TypeScript wc 命令行工具",
+  "description": "multi-lang-backend-showcase: TypeScript wc 命令行工具",
   "bin": {
     "count": "dist/main.js"
   },

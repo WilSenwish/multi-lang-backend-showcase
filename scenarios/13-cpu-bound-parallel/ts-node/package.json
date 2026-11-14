@@ -1,7 +1,7 @@
 {
   "name": "cpu-bound-parallel",
   "version": "1.0.0",
-  "description": "Multi-Lang-Backend-Showcase: TypeScript Node CPU 密集并行计算 (worker_threads)",
+  "description": "multi-lang-backend-showcase: TypeScript Node CPU 密集并行计算 (worker_threads)",
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "build": "tsc",

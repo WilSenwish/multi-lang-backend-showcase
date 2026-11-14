@@ -2,7 +2,7 @@
 name = "cpu-bound-parallel"
 version = "1.0.0"
 edition = "2021"
-description = "Multi-Lang-Backend-Showcase: Rust CPU 密集并行计算"
+description = "multi-lang-backend-showcase: Rust CPU 密集并行计算"
 
 [dependencies]
 axum = "0.7"

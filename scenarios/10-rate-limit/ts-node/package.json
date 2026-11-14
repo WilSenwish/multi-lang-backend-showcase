@@ -1,7 +1,7 @@
 {
   "name": "rate-limit",
   "version": "1.0.0",
-  "description": "Multi-Lang-Backend-Showcase: TS Node token-bucket rate limiter",
+  "description": "multi-lang-backend-showcase: TS Node token-bucket rate limiter",
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "build": "tsc",

@@ -1,4 +1,4 @@
-# Multi-Lang-Backend-Showcase
+# multi-lang-backend-showcase
 
 > **Java 后端工程师视角，横向对比 Java / Go / Python / Rust / TS(Node.js)**
 > 
@@ -43,7 +43,7 @@
 ## 📂 仓库结构
 
 ```
-Multi-Lang-Backend-Showcase/
+multi-lang-backend-showcase/
 ├── README.md                 # 你正在读的文件
 ├── ROADMAP.md                # 完整迭代计划 + 进度追踪 ⭐
 ├── VERIFICATION.md           # 18 场景 × 5 语言（90 个验证单元）本地验证报告（缺陷清单 + 验证方法）⭐

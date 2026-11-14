@@ -1,7 +1,7 @@
 {
   "name": "large-file-streaming",
   "version": "1.0.0",
-  "description": "Multi-Lang-Backend-Showcase: TypeScript Node 大文件流式处理（固定缓冲 + 手动 readSync/writeSync）",
+  "description": "multi-lang-backend-showcase: TypeScript Node 大文件流式处理（固定缓冲 + 手动 readSync/writeSync）",
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "build": "tsc",

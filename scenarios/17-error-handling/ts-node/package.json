@@ -1,7 +1,7 @@
 {
   "name": "error-handling",
   "version": "1.0.0",
-  "description": "Multi-Lang-Backend-Showcase: TypeScript Node 错误处理深水区（Error.cause 链 + setErrorHandler + unhandledRejection 钩子）",
+  "description": "multi-lang-backend-showcase: TypeScript Node 错误处理深水区（Error.cause 链 + setErrorHandler + unhandledRejection 钩子）",
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "build": "tsc",

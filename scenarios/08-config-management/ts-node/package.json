@@ -1,7 +1,7 @@
 {
   "name": "config-management",
   "version": "1.0.0",
-  "description": "Multi-Lang-Backend-Showcase: TS Node 多环境配置 (zod + @fastify/env)",
+  "description": "multi-lang-backend-showcase: TS Node 多环境配置 (zod + @fastify/env)",
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "build": "tsc",

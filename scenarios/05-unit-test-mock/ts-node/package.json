@@ -1,7 +1,7 @@
 {
   "name": "unit-test",
   "version": "1.0.0",
-  "description": "Multi-Lang-Backend-Showcase: TS Node 单元测试 & Mock",
+  "description": "multi-lang-backend-showcase: TS Node 单元测试 & Mock",
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",

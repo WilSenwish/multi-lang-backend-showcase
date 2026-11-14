@@ -2,7 +2,7 @@
 name = "db-crud-pool"
 version = "1.0.0"
 edition = "2021"
-description = "Multi-Lang-Backend-Showcase: Rust DB CRUD (sqlx + SQLite)"
+description = "multi-lang-backend-showcase: Rust DB CRUD (sqlx + SQLite)"
 
 [dependencies]
 axum = "0.7"

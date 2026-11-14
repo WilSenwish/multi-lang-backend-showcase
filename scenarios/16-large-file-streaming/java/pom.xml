@@ -16,7 +16,7 @@
     <version>1.0.0</version>
     <packaging>jar</packaging>
     <name>large-file-streaming</name>
-    <description>Multi-Lang-Backend-Showcase: Java 大文件流式处理（固定缓冲 + 零每行分配）</description>
+    <description>multi-lang-backend-showcase: Java 大文件流式处理（固定缓冲 + 零每行分配）</description>
 
     <properties>
         <java.version>17</java.version>

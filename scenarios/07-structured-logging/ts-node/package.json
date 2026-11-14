@@ -1,7 +1,7 @@
 {
   "name": "structured-logging",
   "version": "1.0.0",
-  "description": "Multi-Lang-Backend-Showcase: TS Node 结构化日志 (pino)",
+  "description": "multi-lang-backend-showcase: TS Node 结构化日志 (pino)",
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "build": "tsc",

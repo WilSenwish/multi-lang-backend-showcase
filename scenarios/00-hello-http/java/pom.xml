@@ -16,7 +16,7 @@
     <version>1.0.0</version>
     <packaging>jar</packaging>
     <name>hello-http</name>
-    <description>Multi-Lang-Backend-Showcase: Java SpringBoot hello http service</description>
+    <description>multi-lang-backend-showcase: Java SpringBoot hello http service</description>
 
     <properties>
         <java.version>17</java.version>

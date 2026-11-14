@@ -2,7 +2,7 @@
 name = "simple-rag"
 version = "1.0.0"
 edition = "2021"
-description = "Multi-Lang-Backend-Showcase: Rust 轻量 RAG Demo"
+description = "multi-lang-backend-showcase: Rust 轻量 RAG Demo"
 
 [dependencies]
 axum = "0.7"

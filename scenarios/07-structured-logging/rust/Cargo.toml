@@ -2,7 +2,7 @@
 name = "structured-logging"
 version = "1.0.0"
 edition = "2021"
-description = "Multi-Lang-Backend-Showcase: Rust 结构化日志 (tracing)"
+description = "multi-lang-backend-showcase: Rust 结构化日志 (tracing)"
 
 [dependencies]
 axum = "0.7"

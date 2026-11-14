@@ -2,7 +2,7 @@
 name = "structured-concurrency"
 version = "1.0.0"
 edition = "2021"
-description = "Multi-Lang-Backend-Showcase: Rust 结构化并发与取消传播（tokio JoinSet + watch）"
+description = "multi-lang-backend-showcase: Rust 结构化并发与取消传播（tokio JoinSet + watch）"
 
 [dependencies]
 axum = "0.7"

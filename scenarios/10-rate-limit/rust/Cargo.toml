@@ -2,7 +2,7 @@
 name = "rate-limit"
 version = "1.0.0"
 edition = "2021"
-description = "Multi-Lang-Backend-Showcase: Rust token-bucket rate limiter"
+description = "multi-lang-backend-showcase: Rust token-bucket rate limiter"
 
 [dependencies]
 axum = "0.7"

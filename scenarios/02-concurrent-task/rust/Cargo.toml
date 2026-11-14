@@ -2,7 +2,7 @@
 name = "concurrent-task"
 version = "1.0.0"
 edition = "2021"
-description = "Multi-Lang-Backend-Showcase: Rust 并发任务处理"
+description = "multi-lang-backend-showcase: Rust 并发任务处理"
 
 [dependencies]
 axum = "0.7"

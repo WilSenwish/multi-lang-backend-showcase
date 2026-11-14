@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""把仓库内的旧名 multi-lang-backend-showcase 统一改为新名 Multi-Lang-Backend-Showcase。
+"""把仓库内的旧名 multi-lang-backend-showcase 统一改为新名 multi-lang-backend-showcase。
 
 默认干跑（只打印将要改动的行）；加位置参数 apply 才真正写盘。
 跳过历史记录类文件（.wb_verify/all_logs/*、.wb_verify/*.log），它们记录的是改名前的运行现场。
@@ -8,7 +8,7 @@ import os
 import sys
 
 OLD = "multi-lang-backend-showcase"
-NEW = "Multi-Lang-Backend-Showcase"
+NEW = "multi-lang-backend-showcase"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(HERE, ".."))

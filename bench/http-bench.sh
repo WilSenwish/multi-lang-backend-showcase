@@ -22,7 +22,7 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 echo "========================================"
-echo "  Multi-Lang-Backend-Showcase 压测脚本"
+echo "  multi-lang-backend-showcase 压测脚本"
 echo "  wrk 参数: threads=$THREADS, connections=$CONNECTIONS, duration=${DURATION}s"
 echo "========================================"
 echo ""

@@ -16,7 +16,7 @@
     <version>1.0.0</version>
     <packaging>jar</packaging>
     <name>data-analysis</name>
-    <description>Multi-Lang-Backend-Showcase: Java 数据分析处理（tablesaw）</description>
+    <description>multi-lang-backend-showcase: Java 数据分析处理（tablesaw）</description>
 
     <properties>
         <java.version>17</java.version>

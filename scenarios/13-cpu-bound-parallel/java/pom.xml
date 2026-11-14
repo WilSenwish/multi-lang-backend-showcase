@@ -16,7 +16,7 @@
     <version>1.0.0</version>
     <packaging>jar</packaging>
     <name>cpu-bound-parallel</name>
-    <description>Multi-Lang-Backend-Showcase: Java CPU 密集并行计算</description>
+    <description>multi-lang-backend-showcase: Java CPU 密集并行计算</description>
 
     <properties>
         <java.version>17</java.version>

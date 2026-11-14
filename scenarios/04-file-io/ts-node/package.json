@@ -1,7 +1,7 @@
 {
   "name": "file-io",
   "version": "1.0.0",
-  "description": "Multi-Lang-Backend-Showcase: TS Node 文件 IO 对比",
+  "description": "multi-lang-backend-showcase: TS Node 文件 IO 对比",
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "build": "tsc",

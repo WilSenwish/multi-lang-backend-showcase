@@ -16,7 +16,7 @@
     <version>1.0.0</version>
     <packaging>jar</packaging>
     <name>structured-concurrency</name>
-    <description>Multi-Lang-Backend-Showcase: Java 结构化并发与取消传播（JDK 21 StructuredTaskScope preview）</description>
+    <description>multi-lang-backend-showcase: Java 结构化并发与取消传播（JDK 21 StructuredTaskScope preview）</description>
 
     <properties>
         <!-- 本场景是全仓库唯一使用 JDK 21 的实现：

@@ -1,7 +1,7 @@
 {
   "name": "structured-concurrency",
   "version": "1.0.0",
-  "description": "Multi-Lang-Backend-Showcase: TypeScript Node 结构化并发与取消传播 (AbortController)",
+  "description": "multi-lang-backend-showcase: TypeScript Node 结构化并发与取消传播 (AbortController)",
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "build": "tsc",

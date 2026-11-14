@@ -2,7 +2,7 @@
 name = "http-client"
 version = "1.0.0"
 edition = "2021"
-description = "Multi-Lang-Backend-Showcase: Rust HTTP client with retry/circuit-breaker"
+description = "multi-lang-backend-showcase: Rust HTTP client with retry/circuit-breaker"
 
 [dependencies]
 axum = "0.7"

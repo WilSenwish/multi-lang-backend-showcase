@@ -16,7 +16,7 @@
     <version>1.0.0</version>
     <packaging>jar</packaging>
     <name>json-serialize</name>
-    <description>Multi-Lang-Backend-Showcase: Java JSON 序列化对比</description>
+    <description>multi-lang-backend-showcase: Java JSON 序列化对比</description>
 
     <properties>
         <java.version>17</java.version>

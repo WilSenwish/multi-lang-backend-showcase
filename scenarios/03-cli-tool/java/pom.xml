@@ -9,7 +9,7 @@
     <version>1.0.0</version>
     <packaging>jar</packaging>
     <name>cli-tool</name>
-    <description>Multi-Lang-Backend-Showcase: Java wc 命令行工具</description>
+    <description>multi-lang-backend-showcase: Java wc 命令行工具</description>
 
     <properties>
         <java.version>17</java.version>

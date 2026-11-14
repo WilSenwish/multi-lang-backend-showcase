@@ -16,7 +16,7 @@
     <version>1.0.0</version>
     <packaging>jar</packaging>
     <name>concurrent-task</name>
-    <description>Multi-Lang-Backend-Showcase: Java 并发任务处理</description>
+    <description>multi-lang-backend-showcase: Java 并发任务处理</description>
 
     <properties>
         <java.version>17</java.version>

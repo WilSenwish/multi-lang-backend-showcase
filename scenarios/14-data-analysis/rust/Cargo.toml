@@ -2,7 +2,7 @@
 name = "data-analysis"
 version = "1.0.0"
 edition = "2021"
-description = "Multi-Lang-Backend-Showcase: Rust 数据分析处理（polars）"
+description = "multi-lang-backend-showcase: Rust 数据分析处理（polars）"
 
 [dependencies]
 axum = "0.7"

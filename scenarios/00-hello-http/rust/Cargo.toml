@@ -2,7 +2,7 @@
 name = "hello-http"
 version = "1.0.0"
 edition = "2021"
-description = "Multi-Lang-Backend-Showcase: Rust axum hello http service"
+description = "multi-lang-backend-showcase: Rust axum hello http service"
 
 [dependencies]
 axum = "0.7"
