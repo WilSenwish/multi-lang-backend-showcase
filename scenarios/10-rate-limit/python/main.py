@@ -120,4 +120,4 @@ if __name__ == "__main__":
     import uvicorn
     print("限流配置：QPS=1, burst=10 (每秒 1 个令牌，桶容量 10)")
     print("Python asyncio 单线程事件循环 → 天然无并发竞争")
-    uvicorn.run(app, host="0.0.0.0", port=8122, log_level="warning")
+    uvicorn.run(app, host="0.0.0.0", port=8122, log_level="debug")
